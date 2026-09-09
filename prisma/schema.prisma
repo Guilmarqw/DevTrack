@@ -1,0 +1,306 @@
+// DevTrack schema. Local-only, MariaDB 10.4 via XAMPP.
+//
+// Shape of the model, in one paragraph: a User owns Projects. Every upload or
+// re-scan of a project writes one immutable ProjectSnapshot, and all measured
+// data (language stats, per-file rows, dependencies) hangs off that snapshot
+// rather than off the project. That is what makes the history charts possible --
+// nothing measured is ever overwritten. Everything a person edits by hand
+// (tasks, tech tags, completion target) hangs off the Project instead, because
+// it describes current intent, not a past measurement.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  USER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  projects     Project[]
+  createdTasks Task[]
+  activity     ActivityLogEntry[]
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+enum CompletionMode {
+  /// Derived from weighted task completion.
+  TASKS
+  /// Whatever the owner typed in.
+  MANUAL
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  description String?   @db.Text
+  ownerId     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  archivedAt  DateTime?
+
+  completionMode      CompletionMode @default(TASKS)
+  /// Only read when completionMode is MANUAL. 0-100.
+  manualCompletionPct Int            @default(0)
+
+  /// Per-file rows multiply fast (a few thousand files times every snapshot),
+  /// so storing them is opt-in per project rather than the default.
+  trackFiles Boolean @default(false)
+
+  owner     User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  snapshots ProjectSnapshot[]
+  tasks     Task[]
+  techTags  TechTag[]
+  activity  ActivityLogEntry[]
+
+  @@unique([ownerId, name])
+  @@index([ownerId])
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots -- one per upload or re-scan, never mutated after creation
+// ---------------------------------------------------------------------------
+
+enum SnapshotSource {
+  UPLOAD
+  RESCAN
+}
+
+enum UploadKind {
+  FOLDER
+  ZIP
+}
+
+model ProjectSnapshot {
+  id        String   @id @default(cuid())
+  projectId String
+  createdAt DateTime @default(now())
+
+  source     SnapshotSource
+  uploadKind UploadKind
+  /// Folder name or original .zip filename, for the activity feed.
+  sourceName String
+
+  /// Counts exclude node_modules, build output, lockfiles and binaries.
+  totalFiles Int
+  totalLines Int
+  /// Int caps at ~2.1 GB of counted text. Binaries and vendored trees are
+  /// excluded before counting, so a source tree will not get close.
+  totalBytes Int
+
+  /// Completion % captured at snapshot time. Denormalised on purpose: task
+  /// state changes independently of uploads, so the history chart needs the
+  /// value as it stood when the snapshot was taken.
+  completionPct Float
+
+  project       Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  languageStats LanguageStat[]
+  files         SnapshotFile[]
+  dependencies  Dependency[]
+  activity      ActivityLogEntry[]
+
+  @@index([projectId, createdAt])
+}
+
+model LanguageStat {
+  id         String @id @default(cuid())
+  snapshotId String
+
+  /// Analyzer output, e.g. "TypeScript". Percentages are derived at read time
+  /// from these raw counts, never stored.
+  language  String
+  fileCount Int
+  lines     Int
+  bytes     Int
+
+  snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, language])
+}
+
+model SnapshotFile {
+  id         String @id @default(cuid())
+  snapshotId String
+
+  /// Repo-relative path. Stored as TEXT because paths outrun any sane VARCHAR,
+  /// with a sha256 of the path carrying the uniqueness constraint -- utf8mb4
+  /// index keys cap out around 768 chars, so the path itself cannot be indexed.
+  path     String @db.Text
+  pathHash String @db.Char(64)
+
+  language String?
+  lines    Int
+  bytes    Int
+
+  snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, pathHash])
+  @@index([snapshotId, language])
+}
+
+enum PackageManager {
+  NPM
+  PIP
+  GO
+  CARGO
+  COMPOSER
+  OTHER
+}
+
+enum DependencyScope {
+  RUNTIME
+  DEV
+  PEER
+  OPTIONAL
+}
+
+model Dependency {
+  id         String @id @default(cuid())
+  snapshotId String
+
+  name       String
+  /// The declared range, verbatim ("^19.2.0"), not a resolved version.
+  version    String?
+  manager    PackageManager
+  scope      DependencyScope @default(RUNTIME)
+  /// Which manifest it came from, e.g. "package.json".
+  sourceFile String
+
+  snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([snapshotId, manager, name, scope])
+  @@index([snapshotId])
+}
+
+// ---------------------------------------------------------------------------
+// Human-edited state -- lives on Project, not on a snapshot
+// ---------------------------------------------------------------------------
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+model Task {
+  id        String  @id @default(cuid())
+  projectId String
+  title     String
+  notes     String? @db.Text
+
+  status TaskStatus @default(TODO)
+  /// Lets a milestone count for more than a chore in the completion figure.
+  weight Int        @default(1)
+
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status])
+  @@index([createdById])
+}
+
+enum TechCategory {
+  FRONTEND
+  BACKEND
+  DATABASE
+  OTHER
+}
+
+enum TechOrigin {
+  DETECTED
+  MANUAL
+}
+
+model TechTag {
+  id        String @id @default(cuid())
+  projectId String
+
+  name     String
+  category TechCategory
+  origin   TechOrigin   @default(DETECTED)
+
+  /// What gave it away, e.g. "package.json: react". Null for manual tags.
+  evidence String? @db.Text
+
+  /// A detection the owner rejected. Kept as a row so re-scans do not keep
+  /// resurrecting it.
+  dismissedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, category, name])
+  @@index([projectId])
+}
+
+// ---------------------------------------------------------------------------
+// Activity feed
+// ---------------------------------------------------------------------------
+
+enum ActivityType {
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  SNAPSHOT_UPLOADED
+  SNAPSHOT_RESCANNED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_COMPLETED
+  TASK_DELETED
+  TECH_TAGS_UPDATED
+  COMPLETION_TARGET_CHANGED
+}
+
+model ActivityLogEntry {
+  id        String @id @default(cuid())
+  projectId String
+
+  type    ActivityType
+  /// Pre-rendered one-line summary, so the feed needs no per-type formatter.
+  summary String
+
+  /// Type-specific extras (task id, LOC delta, and so on). MariaDB stores JSON
+  /// as LONGTEXT, so treat this as opaque -- never filter or sort on it.
+  metadata Json?
+
+  /// Set when the entry refers to a specific snapshot.
+  snapshotId String?
+  /// Null once the acting user is deleted; the history entry survives.
+  actorId    String?
+
+  createdAt DateTime @default(now())
+
+  project  Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshot ProjectSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  actor    User?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@index([snapshotId])
+  @@index([actorId])
+}

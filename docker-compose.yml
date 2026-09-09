@@ -1,0 +1,19 @@
+# Fallback only. This machine runs MariaDB 10.4 via XAMPP on port 3306, which
+# Prisma's mysql provider drives fine, so nothing here needs to be started.
+# Use this if you ever move off XAMPP: `docker compose up -d`, then point
+# DATABASE_URL at port 3307 to avoid colliding with the XAMPP instance.
+services:
+  mysql:
+    image: mysql:8
+    container_name: devtrack-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: devtrack
+      MYSQL_ROOT_PASSWORD: devtrack
+    ports:
+      - "3307:3306"
+    volumes:
+      - devtrack-mysql:/var/lib/mysql
+
+volumes:
+  devtrack-mysql:

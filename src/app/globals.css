@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+/* Minimalist base: near-neutral greys, a single indigo accent reserved for
+   interactive elements. Chart colors are a separate, validated system below.
+
+   @theme must be top-level in Tailwind v4 — it registers the tokens and emits
+   them as :root custom properties. Dark mode then just overrides those same
+   properties in a normal media query, which the generated utilities pick up. */
+@theme {
+  --color-canvas: #fbfbfa;
+  --color-surface: #ffffff;
+  --color-line: #e7e6e3;
+  --color-ink: #1a1a18;
+  --color-muted: #6b6b66;
+  --color-faint: #9a9a94;
+  --color-accent: #4f46e5;
+  --color-accent-soft: #eef2ff;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Menlo, Consolas,
+    monospace;
+
+  /* ---------------------------------------------------------------------
+     Chart palette. Eight categorical slots in a fixed order — the order IS
+     the colorblind-safety mechanism, so slots are assigned in sequence and
+     never cycled or reordered. Validated with the dataviz validator against
+     this project's own surfaces (#ffffff light, #1a1a19 dark): both modes
+     pass the lightness band, chroma floor, adjacent CVD separation (worst
+     9.1 light / 8.4 dark) and normal-vision floor (19.6 / 19.3).
+
+     Light mode raises a contrast WARN on aqua, yellow and magenta (all under
+     3:1 on white). The relief for that is the table view shipped beside every
+     chart — values are never gated behind color or a tooltip.
+     --------------------------------------------------------------------- */
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+  --color-series-5: #e87ba4;
+  --color-series-6: #008300;
+  --color-series-7: #4a3aa7;
+  --color-series-8: #e34948;
+
+  /* Tail bucket and de-emphasised marks. Deliberately not a categorical slot:
+     "Other" is not an entity, so it must not look like one. */
+  --color-series-other: #898781;
+
+  /* Chart chrome, one step off the surface so it stays recessive. */
+  --color-grid: #e1e0d9;
+  --color-axis: #c3c2b7;
+}
+
+/* The dark values are declared under two scopes: the media query covers the
+   OS setting, and the [data-theme] scope lets an explicit choice win in both
+   directions. The :not([data-theme="light"]) guard is what lets a light stamp
+   beat OS-dark.
+
+   These are the same eight hues re-stepped for the dark surface — a selected
+   dark palette, not an automatic flip. All eight clear 3:1 on #1a1a19. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-canvas: #0d0d0d;
+    --color-surface: #1a1a19;
+    --color-line: #2e2e2b;
+    --color-ink: #f2f1ee;
+    --color-muted: #a3a29c;
+    --color-faint: #6f6e69;
+    --color-accent: #8b85f5;
+    --color-accent-soft: #23223a;
+
+    --color-series-1: #3987e5;
+    --color-series-2: #d95926;
+    --color-series-3: #199e70;
+    --color-series-4: #c98500;
+    --color-series-5: #d55181;
+    --color-series-6: #008300;
+    --color-series-7: #9085e9;
+    --color-series-8: #e66767;
+    --color-series-other: #898781;
+
+    --color-grid: #2c2c2a;
+    --color-axis: #383835;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-canvas: #0d0d0d;
+  --color-surface: #1a1a19;
+  --color-line: #2e2e2b;
+  --color-ink: #f2f1ee;
+  --color-muted: #a3a29c;
+  --color-faint: #6f6e69;
+  --color-accent: #8b85f5;
+  --color-accent-soft: #23223a;
+
+  --color-series-1: #3987e5;
+  --color-series-2: #d95926;
+  --color-series-3: #199e70;
+  --color-series-4: #c98500;
+  --color-series-5: #d55181;
+  --color-series-6: #008300;
+  --color-series-7: #9085e9;
+  --color-series-8: #e66767;
+  --color-series-other: #898781;
+
+  --color-grid: #2c2c2a;
+  --color-axis: #383835;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Axis ticks and table columns are the only places digits must line up. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
