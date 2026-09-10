@@ -210,71 +210,106 @@ function basenameOf(path: string): string {
   return (path.split("/").pop() ?? path).toLowerCase();
 }
 
+const CATEGORY_ORDER: TechCategory[] = [
+  "FRONTEND",
+  "BACKEND",
+  "DATABASE",
+  "OTHER",
+];
+
+/**
+ * Gathers stack signals one at a time.
+ *
+ * A collector rather than a single function because the streaming reader never
+ * holds the whole tree: it sees one path, and occasionally one file's body, at
+ * a time. Evidence for the same technology merges as it arrives, so a tag can
+ * still cite several independent signals.
+ */
+export class TechCollector {
+  private readonly found = new Map<string, DetectedTech>();
+
+  add(name: string, category: TechCategory, evidence: string): void {
+    const key = `${category}:${name}`;
+    const existing = this.found.get(key);
+    if (!existing) {
+      this.found.set(key, { name, category, evidence });
+      return;
+    }
+    // Several signals for one technology is a stronger result, so keep them
+    // all — capped so the evidence line stays readable.
+    const parts = existing.evidence.split(", ");
+    if (!parts.includes(evidence) && parts.length < 3) {
+      existing.evidence = `${existing.evidence}, ${evidence}`;
+    }
+  }
+
+  /** Config-file signals, from the path alone. Safe to call for every file. */
+  addPath(path: string): void {
+    if (isExcludedPath(path)) return;
+    const base = basenameOf(path);
+
+    for (const rule of FILE_RULES) {
+      if (rule.test(path, base)) this.add(rule.name, rule.category, rule.label);
+    }
+
+    if (base === "schema.prisma") {
+      this.add("Prisma", "DATABASE", "prisma/schema.prisma");
+    }
+  }
+
+  /** Reads the real database out of a Prisma datasource block. */
+  addPrismaSchema(contents: string): void {
+    const provider = /provider\s*=\s*"([a-z]+)"/i.exec(contents);
+    if (!provider) return;
+    const mapped = PRISMA_PROVIDERS[provider[1].toLowerCase()];
+    if (mapped) {
+      this.add(mapped, "DATABASE", `schema.prisma provider "${provider[1]}"`);
+    }
+  }
+
+  addDependency(dep: ParsedDependency): void {
+    const rule =
+      DEPENDENCY_RULES[dep.name.toLowerCase()] ?? DEPENDENCY_RULES[dep.name];
+    if (!rule) return;
+    this.add(
+      rule.name,
+      rule.category,
+      `${basenameOf(dep.sourceFile)}: ${dep.name}`,
+    );
+  }
+
+  finish(): DetectedTech[] {
+    return [...this.found.values()].sort(
+      (a, b) =>
+        CATEGORY_ORDER.indexOf(a.category) -
+          CATEGORY_ORDER.indexOf(b.category) || a.name.localeCompare(b.name),
+    );
+  }
+}
+
 /**
  * Infers the stack from declared dependencies plus config-file presence.
  *
- * Every hit carries its evidence string, so the UI can show *why* a tag was
- * suggested and the reader can overrule a bad guess instead of trusting it.
- * Duplicate technologies collapse to one tag and the evidence is merged.
+ * Array-based, kept for the test suite and any caller that already holds the
+ * whole tree; the streaming reader drives TechCollector directly.
  */
 export function detectTech(
   entries: RawEntry[],
   dependencies: ParsedDependency[],
 ): DetectedTech[] {
-  const found = new Map<string, DetectedTech>();
+  const collector = new TechCollector();
 
-  const add = (
-    name: string,
-    category: TechCategory,
-    evidence: string,
-  ) => {
-    const key = `${category}:${name}`;
-    const existing = found.get(key);
-    if (!existing) {
-      found.set(key, { name, category, evidence });
-      return;
-    }
-    // Several signals for the same technology is a stronger result, so keep
-    // them all — capped so the evidence line stays readable.
-    const parts = existing.evidence.split(", ");
-    if (!parts.includes(evidence) && parts.length < 3) {
-      existing.evidence = `${existing.evidence}, ${evidence}`;
-    }
-  };
-
-  for (const dep of dependencies) {
-    const rule = DEPENDENCY_RULES[dep.name.toLowerCase()] ?? DEPENDENCY_RULES[dep.name];
-    if (rule) {
-      add(rule.name, rule.category, `${basenameOf(dep.sourceFile)}: ${dep.name}`);
-    }
-  }
+  for (const dep of dependencies) collector.addDependency(dep);
 
   for (const entry of entries) {
-    if (isExcludedPath(entry.path)) continue;
-    const base = basenameOf(entry.path);
-
-    for (const rule of FILE_RULES) {
-      if (rule.test(entry.path, base)) {
-        add(rule.name, rule.category, rule.label);
-      }
-    }
-
-    if (base === "schema.prisma") {
-      add("Prisma", "DATABASE", "prisma/schema.prisma");
-      const provider = /provider\s*=\s*"([a-z]+)"/i.exec(
-        entry.content.toString("utf8"),
-      );
-      const mapped = provider && PRISMA_PROVIDERS[provider[1].toLowerCase()];
-      if (mapped) {
-        add(mapped, "DATABASE", `schema.prisma provider "${provider![1]}"`);
-      }
+    collector.addPath(entry.path);
+    if (
+      !isExcludedPath(entry.path) &&
+      basenameOf(entry.path) === "schema.prisma"
+    ) {
+      collector.addPrismaSchema(entry.content.toString("utf8"));
     }
   }
 
-  const order: TechCategory[] = ["FRONTEND", "BACKEND", "DATABASE", "OTHER"];
-  return [...found.values()].sort(
-    (a, b) =>
-      order.indexOf(a.category) - order.indexOf(b.category) ||
-      a.name.localeCompare(b.name),
-  );
+  return collector.finish();
 }

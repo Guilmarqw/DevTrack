@@ -110,9 +110,10 @@ model ProjectSnapshot {
   /// Counts exclude node_modules, build output, lockfiles and binaries.
   totalFiles Int
   totalLines Int
-  /// Int caps at ~2.1 GB of counted text. Binaries and vendored trees are
-  /// excluded before counting, so a source tree will not get close.
-  totalBytes Int
+  /// BigInt, not Int: uploads have no size limit, and Int would cap a project
+  /// at ~2.1 GB of counted text. Read back through Number() at the query
+  /// boundary — a bigint cannot cross into a client component.
+  totalBytes BigInt
 
   /// Completion % captured at snapshot time. Denormalised on purpose: task
   /// state changes independently of uploads, so the history chart needs the
@@ -137,7 +138,7 @@ model LanguageStat {
   language  String
   fileCount Int
   lines     Int
-  bytes     Int
+  bytes     BigInt
 
   snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 
@@ -156,7 +157,7 @@ model SnapshotFile {
 
   language String?
   lines    Int
-  bytes    Int
+  bytes    BigInt
 
   snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 

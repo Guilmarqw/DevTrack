@@ -23,7 +23,25 @@ export type DependencyScan = {
   problems: ManifestProblem[];
 };
 
-const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
+export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Whether a path is a dependency manifest.
+ *
+ * Exported because the streaming reader has to decide *before* reading a file
+ * whether its contents are worth keeping — manifests are the only files whose
+ * bodies survive past the line counter.
+ */
+export function isManifestPath(path: string): boolean {
+  const name = basenameOf(path);
+  return (
+    name === "package.json" ||
+    name === "composer.json" ||
+    name === "go.mod" ||
+    name === "cargo.toml" ||
+    /^[a-z-]*requirements[a-z-]*[.]txt$/.test(name)
+  );
+}
 
 function text(entry: RawEntry): string {
   return entry.content.toString("utf8");
@@ -276,7 +294,7 @@ export function scanDependencies(entries: RawEntry[]): DependencyScan {
 
   const seen = new Set<string>();
   const dependencies = collected.filter((dep) => {
-    const key = `${dep.manager} ${dep.name} ${dep.scope}`;
+    const key = `${dep.manager}|${dep.name}|${dep.scope}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

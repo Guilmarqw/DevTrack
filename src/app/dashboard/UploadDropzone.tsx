@@ -3,6 +3,10 @@
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDropzone, type FileRejection } from "react-dropzone";
+import {
+  UploadProgress,
+  type UploadPhase,
+} from "@/components/UploadProgress";
 
 type UploadSummary = {
   projectId: string;
@@ -36,11 +40,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Mirrors the server's limits in src/lib/upload/zip.ts. Checked here too so a
-// 300 MB folder is refused instantly instead of after uploading all of it.
-const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
-const MAX_FILES = 50_000;
-
 export function UploadDropzone({ projectId }: { projectId?: string }) {
   const router = useRouter();
   const folderInput = useRef<HTMLInputElement>(null);
@@ -50,59 +49,94 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadSummary | null>(null);
   const [projectName, setProjectName] = useState("");
-  // What is being worked on, so "Analysing…" can say how much.
-  const [progress, setProgress] = useState<{
-    files: number;
-    bytes: number;
-  } | null>(null);
+  const [phase, setPhase] = useState<UploadPhase>({ kind: "idle" });
 
   const upload = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
 
-      // Refuse before spending time on the wire, and say what the limit is
-      // rather than just "too big".
-      if (files.length > MAX_FILES) {
-        setError(
-          `That folder has ${files.length.toLocaleString()} files. The limit is ${MAX_FILES.toLocaleString()}.`,
-        );
-        return;
-      }
       const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-      if (totalBytes > MAX_TOTAL_BYTES) {
-        setError(
-          `That upload is ${formatBytes(totalBytes)}. The limit is 256 MB — check that a build folder is not being included.`,
-        );
-        return;
-      }
 
       setBusy(true);
       setError(null);
       setResult(null);
-      setProgress({ files: files.length, bytes: totalBytes });
+      setPhase({
+        kind: "uploading",
+        sentBytes: 0,
+        totalBytes,
+        files: files.length,
+      });
 
       try {
         const form = new FormData();
-        if (projectId) form.set("projectId", projectId);
-        else if (projectName.trim()) form.set("projectName", projectName.trim());
+        if (!projectId && projectName.trim()) {
+          form.set("projectName", projectName.trim());
+        }
 
         const isSingleZip =
           files.length === 1 && files[0].name.toLowerCase().endsWith(".zip");
 
         for (const file of files) {
-          form.append("files", file, file.name);
-          // The server pairs these by index; a zip carries no tree of its own.
+          // The path goes *before* its file. The server streams the request
+          // in one pass, so it has to know where a file belongs by the time
+          // the bytes arrive — pairing them by index afterwards would mean
+          // buffering, which is what the size limits used to exist for.
           if (!isSingleZip) form.append("paths", relativePathOf(file));
+          form.append("files", file, file.name);
         }
 
-        const response = await fetch("/api/upload", {
-          method: "POST",
-          body: form,
+        // projectId travels in the query string so the server can look up
+        // whether this project stores per-file rows without reading the body.
+        const endpoint = projectId
+          ? `/api/upload?projectId=${encodeURIComponent(projectId)}`
+          : "/api/upload";
+
+        // XMLHttpRequest rather than fetch: fetch cannot report how much of
+        // a request body has been sent, and with no size cap an upload can run
+        // for minutes. Real bytes-sent feedback matters more than tidier code.
+        const { status, body } = await new Promise<{
+          status: number;
+          body: string;
+        }>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", endpoint);
+
+          xhr.upload.addEventListener("progress", (event) => {
+            if (!event.lengthComputable) return;
+            setPhase({
+              kind: "uploading",
+              sentBytes: event.loaded,
+              totalBytes: event.total,
+              files: files.length,
+            });
+          });
+
+          // Once the body is sent the server starts counting, which has no
+          // honest percentage — switch to the indeterminate phase.
+          xhr.upload.addEventListener("load", () => {
+            setPhase({ kind: "analysing", totalBytes, files: files.length });
+          });
+
+          xhr.addEventListener("load", () =>
+            resolve({ status: xhr.status, body: xhr.responseText }),
+          );
+          xhr.addEventListener("error", () =>
+            reject(new Error("network error")),
+          );
+          xhr.addEventListener("abort", () => reject(new Error("aborted")));
+
+          xhr.send(form);
         });
 
-        const payload = await response.json();
+        let payload: { error?: string } & Partial<UploadSummary>;
+        try {
+          payload = JSON.parse(body);
+        } catch {
+          setError("The server sent a response that could not be read.");
+          return;
+        }
 
-        if (!response.ok) {
+        if (status < 200 || status >= 300) {
           setError(payload.error ?? "That upload failed.");
           return;
         }
@@ -115,7 +149,7 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
         setError("Could not reach the server. Is the dev server still running?");
       } finally {
         setBusy(false);
-        setProgress(null);
+        setPhase({ kind: "idle" });
       }
     },
     [projectId, projectName, router],
@@ -166,17 +200,16 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
       >
         <input {...getInputProps()} />
 
-        <p className="text-sm font-medium" role={busy ? "status" : undefined}>
+        <p className="text-sm font-medium">
           {busy
-            ? "Analysing…"
+            ? "Working…"
             : isDragActive
               ? "Drop to analyse"
               : "Drop a project folder or a .zip here"}
         </p>
         <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted">
-          {busy && progress
-            ? `${progress.files.toLocaleString()} ${progress.files === 1 ? "file" : "files"} · ${formatBytes(progress.bytes)} — counting lines and reading manifests.`
-            : "node_modules, build output, lockfiles and binaries are skipped automatically."}
+          Any size. node_modules, build output, lockfiles and binaries are
+          skipped automatically.
         </p>
 
         <div className="mt-4 flex items-center justify-center gap-2">
@@ -223,6 +256,8 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
           }}
         />
       </div>
+
+      <UploadProgress phase={phase} />
 
       {error && (
         <p

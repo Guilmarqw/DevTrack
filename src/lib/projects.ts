@@ -49,7 +49,7 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
   if (!project) return null;
 
   // Oldest first: the charts read left-to-right in time order.
-  const snapshots = await db.projectSnapshot.findMany({
+  const snapshotRows = await db.projectSnapshot.findMany({
     where: { projectId: project.id },
     orderBy: { createdAt: "asc" },
     select: {
@@ -68,6 +68,19 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
       },
     },
   });
+
+  // Byte counts are BigInt in the database so a project has no size ceiling,
+  // but a bigint cannot be serialised into a client component. Number is exact
+  // to 9 petabytes, so converting here is lossless and keeps every consumer
+  // working in plain numbers.
+  const snapshots = snapshotRows.map((snapshot) => ({
+    ...snapshot,
+    totalBytes: Number(snapshot.totalBytes),
+    languageStats: snapshot.languageStats.map((stat) => ({
+      ...stat,
+      bytes: Number(stat.bytes),
+    })),
+  }));
 
   const activity = await db.activityLogEntry.findMany({
     where: { projectId: project.id },

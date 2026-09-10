@@ -1,9 +1,9 @@
 import { db } from "@/lib/db";
-import { analyze, type RawEntry } from "@/lib/analyzer/analyze";
-import { scanDependencies } from "@/lib/analyzer/dependencies";
-import { detectTech, type DetectedTech } from "@/lib/analyzer/tech";
+import type { AnalysisResult } from "@/lib/analyzer/analyze";
+import type { DependencyScan } from "@/lib/analyzer/dependencies";
+import type { DetectedTech } from "@/lib/analyzer/tech";
 import { computeCompletion } from "@/lib/completion";
-import { UploadError } from "./zip";
+import { UploadError } from "./stream";
 import type { SessionUser } from "@/lib/session";
 import type { UploadKind } from "@/generated/prisma/enums";
 
@@ -26,7 +26,10 @@ export type SnapshotRequest = {
   projectName?: string;
   uploadKind: UploadKind;
   sourceName: string;
-  entries: RawEntry[];
+  /** Already streamed and folded — see src/lib/upload/stream.ts. */
+  analysis: AnalysisResult;
+  dependencies: DependencyScan;
+  detected: DetectedTech[];
 };
 
 export type SnapshotSummary = {
@@ -49,13 +52,7 @@ export type SnapshotSummary = {
 export async function createSnapshot(
   request: SnapshotRequest,
 ): Promise<SnapshotSummary> {
-  const analysis = analyze(request.entries);
-
-  if (analysis.totalFiles === 0) {
-    throw new UploadError(
-      "No countable source files were found. Everything was a build artefact, a binary, or empty.",
-    );
-  }
+  const analysis = request.analysis;
 
   // Resolve the target project before opening the transaction, so an
   // authorization failure never leaves a half-written snapshot.
@@ -147,7 +144,7 @@ async function writeSnapshot({
   isNewProject,
 }: {
   request: SnapshotRequest;
-  analysis: ReturnType<typeof analyze>;
+  analysis: AnalysisResult;
   project: TargetProject;
   isNewProject: boolean;
 }): Promise<SnapshotSummary> {
@@ -157,8 +154,8 @@ async function writeSnapshot({
   // Dependencies are snapshot-scoped, so they get versioned like the metrics.
   // Tech tags are project-scoped because a person edits them, so they are
   // reconciled against what the owner has already decided.
-  const depScan = scanDependencies(request.entries);
-  const detected = detectTech(request.entries, depScan.dependencies);
+  const depScan = request.dependencies;
+  const detected = request.detected;
 
   const snapshotId = await db.$transaction(async (tx) => {
     const snapshot = await tx.projectSnapshot.create({

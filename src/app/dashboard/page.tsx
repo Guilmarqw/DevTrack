@@ -109,7 +109,9 @@ export default async function DashboardPage() {
                     <p className="mt-1 text-xs text-muted">
                       {latest.totalFiles.toLocaleString()} files ·{" "}
                       {latest.totalLines.toLocaleString()} lines ·{" "}
-                      {formatBytes(latest.totalBytes)}
+                      {/* BigInt in the database so projects have no size
+                          ceiling; Number is exact to 9 PB. */}
+                      {formatBytes(Number(latest.totalBytes))}
                       {latest.languageStats.length > 0 && (
                         <>
                           {" · "}

@@ -72,7 +72,9 @@ export async function getAccountAnalytics(user: SessionUser) {
       measuredProjects += 1;
       totalLines += latest.totalLines;
       totalFiles += latest.totalFiles;
-      totalBytes += latest.totalBytes;
+      // BigInt in the database so projects have no size ceiling; Number is
+      // exact to 9 PB and is what every consumer expects.
+      totalBytes += Number(latest.totalBytes);
 
       for (const stat of latest.languageStats) {
         const running = languages.get(stat.language) ?? {
@@ -82,7 +84,7 @@ export async function getAccountAnalytics(user: SessionUser) {
           projects: 0,
         };
         running.lines += stat.lines;
-        running.bytes += stat.bytes;
+        running.bytes += Number(stat.bytes);
         running.projects += 1;
         languages.set(stat.language, running);
       }
@@ -94,7 +96,7 @@ export async function getAccountAnalytics(user: SessionUser) {
       snapshots: project._count.snapshots,
       lines: latest?.totalLines ?? 0,
       files: latest?.totalFiles ?? 0,
-      bytes: latest?.totalBytes ?? 0,
+      bytes: Number(latest?.totalBytes ?? 0),
       completionPct: computeCompletion(project, project.tasks),
       lastScanned: latest?.createdAt ?? null,
     };

@@ -1,4 +1,9 @@
-import { isUnsafeEntryPath, stripCommonRoot } from "../src/lib/upload/zip";
+import { isUnsafeEntryPath } from "../src/lib/upload/stream";
+import {
+  FileScanner,
+  SnapshotAccumulator,
+  stripSharedRoot,
+} from "../src/lib/analyzer/stream";
 import { isExcludedPath, normalizePath, looksBinary } from "../src/lib/analyzer/exclude";
 import { computeCompletion } from "../src/lib/completion";
 import { scanDependencies } from "../src/lib/analyzer/dependencies";
@@ -131,24 +136,39 @@ check("windows drive", isUnsafeEntryPath("C:/Windows/evil.dll"), true);
 check("dotdot inside a name is fine", isUnsafeEntryPath("app/a..b.ts"), false);
 check("ordinary path", isUnsafeEntryPath("app/src/index.ts"), false);
 
-console.log("\nstripCommonRoot");
-const e = (path: string) => ({ path, content: buf("x") });
+console.log("");
+console.log("stripSharedRoot");
+const scanned = (path: string) => ({
+  path,
+  pathHash: "x".repeat(64),
+  language: "TypeScript",
+  lines: 1,
+  bytes: 1,
+});
 check(
   "shared root removed",
-  stripCommonRoot([e("proj/a.ts"), e("proj/b/c.ts")]).map((x) => x.path),
+  stripSharedRoot([scanned("proj/a.ts"), scanned("proj/b/c.ts")]).map(
+    (f) => f.path,
+  ),
   ["a.ts", "b/c.ts"],
 );
 check(
   "no shared root kept as-is",
-  stripCommonRoot([e("a.ts"), e("proj/b.ts")]).map((x) => x.path),
+  stripSharedRoot([scanned("a.ts"), scanned("proj/b.ts")]).map((f) => f.path),
   ["a.ts", "proj/b.ts"],
 );
 check(
   "single bare file kept",
-  stripCommonRoot([e("a.ts")]).map((x) => x.path),
+  stripSharedRoot([scanned("a.ts")]).map((f) => f.path),
   ["a.ts"],
 );
-check("empty list", stripCommonRoot([]), []);
+check("empty list", stripSharedRoot([]), []);
+check(
+  "pathHash recomputed after stripping",
+  stripSharedRoot([scanned("proj/a.ts"), scanned("proj/b.ts")])[0].pathHash !==
+    "x".repeat(64),
+  true,
+);
 
 console.log("\ncomputeCompletion");
 const tasks = (...spec: Array<["TODO" | "IN_PROGRESS" | "DONE", number]>) =>
@@ -363,6 +383,173 @@ check(
   new Set(tech.map((t) => `${t.category}:${t.name}`)).size,
 );
 check("empty input", detectTech([], []), []);
+
+
+console.log("");
+console.log("FileScanner agrees with countLines");
+
+// Feeds content through the scanner in awkward chunk sizes, because the whole
+// risk of incremental counting is a boundary landing between bytes.
+function scanInChunks(content: Buffer, size: number, path = "a.ts") {
+  const scanner = new FileScanner();
+  for (let i = 0; i < content.length; i += size) {
+    scanner.update(content.subarray(i, i + size));
+  }
+  return scanner.finish(path);
+}
+
+const samples: Array<[string, string]> = [
+  ["one line no newline", "a"],
+  ["one line trailing newline", "a\n"],
+  ["two lines", "a\nb"],
+  ["CRLF", "a\r\nb\r\n"],
+  ["CRLF no trailing", "a\r\nb"],
+  ["blank lines", "a\n\n\nb\n"],
+  ["lone CR", "a\rb"],
+  ["long file", Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n")],
+];
+
+for (const [label, text] of samples) {
+  const content = buf(text);
+  const expected = countLines(content);
+  // Chunk size 1 is the worst case: every newline lands on a boundary.
+  for (const size of [1, 3, 7, 4096]) {
+    const outcome = scanInChunks(content, size);
+    const lines = "file" in outcome ? outcome.file.lines : -1;
+    check(`${label} @ ${size}b chunks`, lines, expected);
+  }
+}
+
+console.log("");
+console.log("FileScanner classification");
+check(
+  "binary detected across a chunk boundary",
+  (() => {
+    const outcome = scanInChunks(Buffer.from([0x61, 0x00, 0x62]), 1);
+    return "skipped" in outcome ? outcome.skipped : "not skipped";
+  })(),
+  "binary",
+);
+check(
+  "empty file skipped",
+  "skipped" in scanInChunks(buf(""), 1) ? "empty" : "not skipped",
+  "empty",
+);
+check(
+  "shebang read from the first chunk",
+  (() => {
+    const outcome = scanInChunks(buf("#!/usr/bin/env python3\nx = 1\n"), 5, "run");
+    return "file" in outcome ? outcome.file.language : "none";
+  })(),
+  "Python",
+);
+check(
+  "byte count is exact",
+  (() => {
+    const outcome = scanInChunks(buf("hello world"), 2);
+    return "file" in outcome ? outcome.file.bytes : -1;
+  })(),
+  11,
+);
+check(
+  "a NUL past the sniff window does not mark binary",
+  (() => {
+    const content = Buffer.concat([
+      Buffer.alloc(9000, 0x61),
+      Buffer.from([0x00]),
+    ]);
+    const outcome = scanInChunks(content, 512);
+    return "file" in outcome;
+  })(),
+  true,
+);
+
+console.log("");
+console.log("SnapshotAccumulator matches analyze()");
+
+// The same tree the array-based analyze() test uses, pushed through the
+// streaming path. Both must agree, or the two code paths have drifted.
+const streamedEntries: Array<[string, Buffer]> = [
+  ["src/index.ts", buf("const a = 1;\nconst b = 2;\n")],
+  ["src/util.js", buf("module.exports = {};\n")],
+  ["README.md", buf("# Title\n\nText\n")],
+  ["scripts/build", buf("#!/usr/bin/env bash\nset -e\n")],
+  ["node_modules/left-pad/index.js", buf("module.exports = 1;\n")],
+  ["packages/web/node_modules/dep/x.js", buf("var x = 1;\n")],
+  [".git/HEAD", buf("ref: refs/heads/main\n")],
+  ["dist/bundle.js", buf("var y=1;\n")],
+  ["public/vendor.min.js", buf("!function(){}();\n")],
+  ["package-lock.json", buf('{"lockfileVersion":3}\n')],
+  ["assets/logo.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])],
+  ["data/blob.custom", Buffer.from([0x01, 0x00, 0x02, 0x03])],
+  ["empty.ts", buf("")],
+  ["src/index.ts", buf("this should be ignored\n")],
+  ["./src/win.ts", buf("export {};\n")],
+];
+
+const acc = new SnapshotAccumulator(true);
+for (const [path, content] of streamedEntries) {
+  const target = acc.shouldRead(path);
+  if (!target) continue;
+  const scanner = new FileScanner(target.captureLimit);
+  // Deliberately tiny chunks.
+  for (let i = 0; i < content.length; i += 3) {
+    scanner.update(content.subarray(i, i + 3));
+  }
+  acc.add(scanner.finish(target.path));
+}
+const streamed = acc.finish();
+
+check("streamed file count matches", streamed.analysis.totalFiles, result.totalFiles);
+check("streamed line count matches", streamed.analysis.totalLines, result.totalLines);
+check("streamed byte count matches", streamed.analysis.totalBytes, result.totalBytes);
+check(
+  "streamed languages match",
+  streamed.analysis.languages.map((l) => l.language).sort(),
+  result.languages.map((l) => l.language).sort(),
+);
+check("streamed excluded count matches", streamed.analysis.skipped.excluded, result.skipped.excluded);
+check("streamed binary count matches", streamed.analysis.skipped.binary, result.skipped.binary);
+check("streamed empty count matches", streamed.analysis.skipped.empty, result.skipped.empty);
+
+console.log("");
+console.log("streaming captures manifests only");
+const manifestAcc = new SnapshotAccumulator(false);
+const capture: Record<string, number> = {};
+for (const [path, content] of [
+  ["package.json", buf('{"dependencies":{"react":"^19.0.0"}}')],
+  ["prisma/schema.prisma", buf('datasource db {\n  provider = "mysql"\n}\n')],
+  ["src/big.ts", buf("export const x = 1;\n")],
+  ["api/requirements.txt", buf("Django==5.0.1\n")],
+] as Array<[string, Buffer]>) {
+  const target = manifestAcc.shouldRead(path);
+  if (!target) continue;
+  capture[path] = target.captureLimit;
+  const scanner = new FileScanner(target.captureLimit);
+  scanner.update(content);
+  manifestAcc.add(scanner.finish(target.path));
+}
+check("package.json body is retained", capture["package.json"] > 0, true);
+check("schema.prisma body is retained", capture["prisma/schema.prisma"] > 0, true);
+check("requirements.txt body is retained", capture["api/requirements.txt"] > 0, true);
+check("ordinary source body is NOT retained", capture["src/big.ts"], 0);
+
+const manifestResult = manifestAcc.finish();
+check(
+  "dependencies parsed from the captured manifests",
+  manifestResult.dependencies.dependencies.map((d) => d.name).sort(),
+  ["Django", "react"],
+);
+check(
+  "prisma provider detected while streaming",
+  manifestResult.detected.find((t) => t.name === "MySQL")?.evidence,
+  'schema.prisma provider "mysql"',
+);
+check(
+  "per-file rows omitted when not tracking",
+  manifestResult.analysis.files.length,
+  0,
+);
 
 console.log(`\n${failures === 0 ? "ALL PASSED" : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);
