@@ -39,7 +39,7 @@ function AddButton() {
     <button
       type="submit"
       disabled={pending}
-      className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+      className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
     >
       {pending ? "Adding…" : "Add"}
     </button>
@@ -75,7 +75,7 @@ export function TaskList({
             required
             maxLength={191}
             placeholder="Ship the upload pipeline"
-            className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-1.5 text-sm outline-none placeholder:text-faint focus:border-accent"
+            className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-1.5 text-sm placeholder:text-faint focus:border-accent"
           />
         </div>
         <div className="w-16">
@@ -89,7 +89,7 @@ export function TaskList({
             min={1}
             max={100}
             defaultValue={1}
-            className="tabular mt-1 w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm outline-none focus:border-accent"
+            className="tabular mt-1 w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:border-accent"
           />
         </div>
         <AddButton />

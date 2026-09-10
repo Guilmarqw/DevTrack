@@ -30,10 +30,18 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
           createdAt: true,
         },
       },
+      // Dismissed tags come back too: the UI shows them behind a disclosure
+      // so a rejected guess can be restored without a database trip.
       techTags: {
-        where: { dismissedAt: null },
         orderBy: [{ category: "asc" }, { name: "asc" }],
-        select: { id: true, name: true, category: true, origin: true },
+        select: {
+          id: true,
+          name: true,
+          category: true,
+          origin: true,
+          evidence: true,
+          dismissedAt: true,
+        },
       },
     },
   });
@@ -77,12 +85,30 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
   const latest = snapshots.at(-1) ?? null;
   const previous = snapshots.length > 1 ? snapshots.at(-2)! : null;
 
+  // Dependencies are snapshot-scoped, and only the newest set is worth
+  // listing — older ones exist so history is not lost, not to be read.
+  const dependencies = latest
+    ? await db.dependency.findMany({
+        where: { snapshotId: latest.id },
+        orderBy: [{ manager: "asc" }, { name: "asc" }],
+        select: {
+          id: true,
+          name: true,
+          version: true,
+          manager: true,
+          scope: true,
+          sourceFile: true,
+        },
+      })
+    : [];
+
   return {
     project,
     snapshots,
     latest,
     previous,
     activity,
+    dependencies,
     // Live figure from current task state, which is not the same as the value
     // frozen into the latest snapshot.
     completionPct: computeCompletion(project, project.tasks),

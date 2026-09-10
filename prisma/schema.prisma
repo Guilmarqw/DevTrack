@@ -35,6 +35,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  /// The leaderboard is the one place a standard user sees anything about
+  /// another account, so it is opt-out per user. Only a display name and
+  /// aggregate totals are ever exposed — never project names or file paths.
+  showOnLeaderboard Boolean @default(true)
+
   projects     Project[]
   createdTasks Task[]
   activity     ActivityLogEntry[]

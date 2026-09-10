@@ -1,6 +1,8 @@
+import { cache } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser } from "@/lib/session";
+import { requireUser, getSessionUser, projectScope } from "@/lib/session";
+import { db } from "@/lib/db";
 import { getProjectDetail } from "@/lib/projects";
 import {
   assignLanguageColors,
@@ -17,9 +19,47 @@ import {
 } from "./Charts";
 import { TaskList } from "./TaskList";
 import { CompletionControl } from "./CompletionControl";
+import { TechTags } from "./TechTags";
+import { Dependencies } from "./Dependencies";
 import { UploadDropzone } from "@/app/dashboard/UploadDropzone";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Cheap existence + visibility check, deduplicated with React's cache so
+ * generateMetadata and the page below share one query per request.
+ */
+const getVisibleProjectName = cache(async (projectId: string) => {
+  const user = await getSessionUser();
+  if (!user) return null;
+
+  const project = await db.project.findFirst({
+    where: { id: projectId, ...projectScope(user) },
+    select: { name: true },
+  });
+  return project?.name ?? null;
+});
+
+/**
+ * Names the browser tab after the project, and raises the 404 early so a bad
+ * id costs one small query instead of the whole detail load. The page body
+ * keeps its own check as a backstop.
+ *
+ * This route deliberately has NO loading.tsx. A route-level loading file wraps
+ * the page in a Suspense boundary, and Next then flushes the shell with a 200
+ * before `notFound()` can run — the correct page renders under the wrong
+ * status, from here or from the body. Correct status won over a skeleton;
+ * the local queries are single-digit milliseconds anyway.
+ */
+export async function generateMetadata({
+  params,
+}: PageProps<"/projects/[projectId]">) {
+  const { projectId } = await params;
+  const name = await getVisibleProjectName(projectId);
+  if (!name) notFound();
+
+  return { title: `${name} · DevTrack` };
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -35,6 +75,30 @@ const shortDate = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit",
   month: "short",
 });
+const shortTime = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/**
+ * Axis labels for the snapshot series.
+ *
+ * Re-scans often land on the same day — several in one afternoon is normal —
+ * and a date-only label then renders as four identical ticks. So the first
+ * snapshot of each day carries the date and the rest carry the time. The
+ * tooltip always shows the full date and time, so nothing is lost.
+ */
+function axisLabels(dates: Date[]): string[] {
+  let previousDay = "";
+  return dates.map((date) => {
+    const day = shortDate.format(date);
+    if (day === previousDay) return shortTime.format(date);
+    previousDay = day;
+    // With more than one snapshot in the series, a bare date is ambiguous the
+    // moment a second one lands the same day, so lead with date + time.
+    return day;
+  });
+}
 
 /**
  * Stat tile. `delta` is plain muted text unless `upIsGood` is set — more lines
@@ -88,8 +152,18 @@ export default async function ProjectPage({
   const detail = await getProjectDetail(projectId, user);
   if (!detail) notFound();
 
-  const { project, snapshots, latest, previous, activity, completionPct } =
-    detail;
+  const {
+    project,
+    snapshots,
+    latest,
+    previous,
+    activity,
+    completionPct,
+    dependencies,
+  } = detail;
+
+  const activeTags = project.techTags.filter((tag) => !tag.dismissedAt);
+  const dismissedTags = project.techTags.filter((tag) => tag.dismissedAt);
 
   // One colour map for the whole page, built from every snapshot, so a
   // language keeps its colour across the bar, the table and the trend.
@@ -108,8 +182,9 @@ export default async function ProjectPage({
       })()
     : [];
 
-  const trend: TrendPoint[] = snapshots.map((snapshot) => ({
-    label: shortDate.format(snapshot.createdAt),
+  const labels = axisLabels(snapshots.map((snapshot) => snapshot.createdAt));
+  const trend: TrendPoint[] = snapshots.map((snapshot, index) => ({
+    label: labels[index],
     fullLabel: dateTime.format(snapshot.createdAt),
     lines: snapshot.totalLines,
     files: snapshot.totalFiles,
@@ -201,6 +276,37 @@ export default async function ProjectPage({
           <div className="mt-3">
             <CompletionTrend data={trend} />
           </div>
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+          Tech stack
+        </h2>
+        <p className="mt-1 text-xs text-muted">
+          Inferred from manifests and config files. Keep a guess to make it
+          permanent, or dismiss it so re-scans stop suggesting it.
+        </p>
+        <div className="mt-3 rounded-lg border border-line bg-surface px-4 py-4">
+          <TechTags
+            projectId={project.id}
+            tags={activeTags}
+            dismissed={dismissedTags}
+          />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+          Dependencies
+        </h2>
+        <p className="mt-1 text-xs text-muted">
+          {dependencies.length > 0
+            ? `${dependencies.length} declared in the latest snapshot, with the ranges as written.`
+            : "Read from the latest snapshot."}
+        </p>
+        <div className="mt-3 rounded-lg border border-line bg-surface px-4 py-4">
+          <Dependencies rows={dependencies} />
         </div>
       </section>
 

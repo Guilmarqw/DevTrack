@@ -1,6 +1,8 @@
 import { isUnsafeEntryPath, stripCommonRoot } from "../src/lib/upload/zip";
 import { isExcludedPath, normalizePath, looksBinary } from "../src/lib/analyzer/exclude";
 import { computeCompletion } from "../src/lib/completion";
+import { scanDependencies } from "../src/lib/analyzer/dependencies";
+import { detectTech } from "../src/lib/analyzer/tech";
 import {
   analyze,
   countLines,
@@ -159,6 +161,208 @@ check("manual mode ignores tasks", computeCompletion({ completionMode: "MANUAL",
 check("manual clamps above 100", computeCompletion({ completionMode: "MANUAL", manualCompletionPct: 150 }, []), 100);
 check("manual clamps below 0", computeCompletion({ completionMode: "MANUAL", manualCompletionPct: -5 }, []), 0);
 check("zero weight treated as 1", computeCompletion({ completionMode: "TASKS", manualCompletionPct: 0 }, tasks(["DONE", 0], ["TODO", 0])), 50);
+
+
+console.log("\nscanDependencies — package.json");
+const npmScan = scanDependencies([
+  {
+    path: "package.json",
+    content: buf(
+      JSON.stringify({
+        dependencies: { react: "^19.0.0", next: "16.3.4" },
+        devDependencies: { typescript: "^5", eslint: "^9" },
+        peerDependencies: { "react-dom": "^19.0.0" },
+        optionalDependencies: { fsevents: "^2" },
+      }),
+    ),
+  },
+  // must not contribute: vendored manifests
+  { path: "node_modules/left-pad/package.json", content: buf('{"dependencies":{"sneaky":"1.0.0"}}') },
+  { path: "packages/api/node_modules/x/package.json", content: buf('{"dependencies":{"nested":"1.0.0"}}') },
+]);
+check("npm dependency count", npmScan.dependencies.length, 6);
+check(
+  "vendored manifests ignored",
+  npmScan.dependencies.some((d) => d.name === "sneaky" || d.name === "nested"),
+  false,
+);
+check("only the real manifest read", npmScan.manifests, ["package.json"]);
+check(
+  "dev scope mapped",
+  npmScan.dependencies.filter((d) => d.scope === "DEV").map((d) => d.name).sort(),
+  ["eslint", "typescript"],
+);
+check("peer scope", npmScan.dependencies.find((d) => d.name === "react-dom")?.scope, "PEER");
+check("optional scope", npmScan.dependencies.find((d) => d.name === "fsevents")?.scope, "OPTIONAL");
+check("range kept verbatim", npmScan.dependencies.find((d) => d.name === "react")?.version, "^19.0.0");
+
+console.log("\nscanDependencies — malformed manifest");
+const badScan = scanDependencies([
+  { path: "package.json", content: buf("{ this is not json") },
+  { path: "src/a.ts", content: buf("export {};\n") },
+]);
+check("no dependencies from broken json", badScan.dependencies.length, 0);
+check("problem surfaced not swallowed", badScan.problems, [
+  { path: "package.json", reason: "not valid JSON" },
+]);
+
+console.log("\nscanDependencies — requirements.txt");
+const pipScan = scanDependencies([
+  {
+    path: "requirements.txt",
+    content: buf(
+      [
+        "# comment line",
+        "",
+        "Django==5.0.1",
+        "flask>=2.0,<3.0",
+        "requests[security]==2.31.0",
+        "psycopg2-binary",
+        'uvicorn==0.30.0 ; python_version < "3.13"',
+        "-r other-requirements.txt",
+        "--index-url https://example.com/simple",
+        "git+https://github.com/x/y.git",
+      ].join("\n"),
+    ),
+  },
+  { path: "requirements-dev.txt", content: buf("pytest==8.0.0\n") },
+]);
+check(
+  "pip names",
+  pipScan.dependencies.map((d) => d.name).sort(),
+  ["Django", "flask", "psycopg2-binary", "pytest", "requests", "uvicorn"],
+);
+check("pip pin kept", pipScan.dependencies.find((d) => d.name === "Django")?.version, "==5.0.1");
+check("pip compound range", pipScan.dependencies.find((d) => d.name === "flask")?.version, ">=2.0,<3.0");
+check("extras stripped from name", pipScan.dependencies.find((d) => d.name === "requests")?.version, "==2.31.0");
+check("bare name has no version", pipScan.dependencies.find((d) => d.name === "psycopg2-binary")?.version, null);
+check("environment marker dropped", pipScan.dependencies.find((d) => d.name === "uvicorn")?.version, "==0.30.0");
+check("dev requirements are DEV scope", pipScan.dependencies.find((d) => d.name === "pytest")?.scope, "DEV");
+
+console.log("\nscanDependencies — go.mod");
+const goScan = scanDependencies([
+  {
+    path: "go.mod",
+    content: buf(
+      [
+        "module example.com/app",
+        "go 1.23",
+        "",
+        "require (",
+        "\tgithub.com/gin-gonic/gin v1.10.0",
+        "\tgorm.io/gorm v1.25.0",
+        "\tgithub.com/bytedance/sonic v1.11.6 // indirect",
+        ")",
+        "",
+        "require github.com/stretchr/testify v1.9.0",
+      ].join("\n"),
+    ),
+  },
+]);
+check(
+  "go direct requires only",
+  goScan.dependencies.map((d) => d.name).sort(),
+  ["github.com/gin-gonic/gin", "github.com/stretchr/testify", "gorm.io/gorm"],
+);
+check("go version captured", goScan.dependencies.find((d) => d.name === "gorm.io/gorm")?.version, "v1.25.0");
+check(
+  "module line is not a dependency",
+  goScan.dependencies.some((d) => d.name === "example.com/app"),
+  false,
+);
+
+console.log("\nscanDependencies — Cargo.toml");
+const cargoScan = scanDependencies([
+  {
+    path: "Cargo.toml",
+    content: buf(
+      [
+        "[package]",
+        'name = "app"',
+        'version = "0.1.0"',
+        "",
+        "[dependencies]",
+        'serde = "1.0"',
+        'tokio = { version = "1.38", features = ["full"] }',
+        "",
+        "[dev-dependencies]",
+        'criterion = "0.5"',
+      ].join("\n"),
+    ),
+  },
+]);
+check(
+  "cargo names",
+  cargoScan.dependencies.map((d) => d.name).sort(),
+  ["criterion", "serde", "tokio"],
+);
+check("cargo simple version", cargoScan.dependencies.find((d) => d.name === "serde")?.version, "1.0");
+check("cargo inline table version", cargoScan.dependencies.find((d) => d.name === "tokio")?.version, "1.38");
+check("cargo dev scope", cargoScan.dependencies.find((d) => d.name === "criterion")?.scope, "DEV");
+check(
+  "[package] keys are not dependencies",
+  cargoScan.dependencies.some((d) => d.name === "version" || d.name === "name"),
+  false,
+);
+
+console.log("\nscanDependencies — monorepo dedupe");
+const monoScan = scanDependencies([
+  { path: "package.json", content: buf('{"dependencies":{"react":"^19.0.0"}}') },
+  { path: "packages/web/package.json", content: buf('{"dependencies":{"react":"^18.0.0","vue":"^3"}}') },
+]);
+check("duplicate name+scope collapses", monoScan.dependencies.filter((d) => d.name === "react").length, 1);
+check("first occurrence wins", monoScan.dependencies.find((d) => d.name === "react")?.version, "^19.0.0");
+check("both manifests recorded", monoScan.manifests.length, 2);
+check("distinct package still present", monoScan.dependencies.some((d) => d.name === "vue"), true);
+
+console.log("\ndetectTech");
+const techEntries = [
+  { path: "package.json", content: buf("{}") },
+  { path: "next.config.ts", content: buf("export default {};\n") },
+  { path: "tsconfig.json", content: buf('{"compilerOptions":{}}') },
+  { path: "Dockerfile", content: buf("FROM node:24\n") },
+  { path: ".github/workflows/ci.yml", content: buf("on: push\n") },
+  { path: "prisma/schema.prisma", content: buf('datasource db {\n  provider = "mysql"\n}\n') },
+  // excluded, must not contribute
+  { path: "node_modules/react/package.json", content: buf("{}") },
+];
+const dep = (name: string, scope: "RUNTIME" | "DEV" = "RUNTIME") => ({
+  name,
+  version: "1",
+  manager: "NPM" as const,
+  scope,
+  sourceFile: "package.json",
+});
+const tech = detectTech(techEntries, [
+  dep("react"),
+  dep("express"),
+  dep("@prisma/client"),
+  dep("eslint-plugin-react", "DEV"),
+  dep("next-auth"),
+]);
+const named = (c: string) => tech.filter((t) => t.category === c).map((t) => t.name).sort();
+check("frontend detected", named("FRONTEND"), ["Next.js", "React"]);
+check("backend detected", named("BACKEND"), ["Express"]);
+check("database detected", named("DATABASE"), ["MySQL", "Prisma"]);
+check("other detected", named("OTHER"), ["Auth.js", "Docker", "GitHub Actions", "TypeScript"]);
+check(
+  "eslint-plugin-react is not React evidence",
+  tech.find((t) => t.name === "React")?.evidence,
+  "package.json: react",
+);
+check("next-auth maps to Auth.js not Next.js", tech.find((t) => t.name === "Auth.js")?.evidence, "package.json: next-auth");
+check(
+  "prisma datasource provider read",
+  tech.find((t) => t.name === "MySQL")?.evidence,
+  'schema.prisma provider "mysql"',
+);
+check("frontend sorts first", tech[0].category, "FRONTEND");
+check(
+  "no duplicate tech entries",
+  tech.length,
+  new Set(tech.map((t) => `${t.category}:${t.name}`)).size,
+);
+check("empty input", detectTech([], []), []);
 
 console.log(`\n${failures === 0 ? "ALL PASSED" : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

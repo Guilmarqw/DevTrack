@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import type { AuthFormState } from "./actions";
+import { PendingOverlay } from "@/components/PendingOverlay";
 
 function SubmitButton({ label }: { label: string }) {
   // useFormStatus only reports the pending state of the form it is rendered
@@ -14,7 +15,7 @@ function SubmitButton({ label }: { label: string }) {
     <button
       type="submit"
       disabled={pending}
-      className="mt-2 w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+      className="press mt-2 w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
     >
       {pending ? "Working…" : label}
     </button>
@@ -22,15 +23,18 @@ function SubmitButton({ label }: { label: string }) {
 }
 
 const fieldClass =
-  "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-accent";
+  "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm placeholder:text-faint focus:border-accent";
 
 const labelClass = "block text-xs font-medium text-muted";
 
 export function AuthForm({
   mode,
   action,
+  initialError = null,
 }: {
   mode: "login" | "signup";
+  /** Message recovered from the query string on the no-JS redirect path. */
+  initialError?: string | null;
   action: (
     prev: AuthFormState,
     formData: FormData,
@@ -41,15 +45,20 @@ export function AuthForm({
   });
 
   const isSignup = mode === "signup";
+  // The action result wins once the form has been submitted in-page.
+  const message = state.error ?? initialError;
 
   return (
-    <div className="mx-auto w-full max-w-sm px-6 py-24">
+    <div className="rise mx-auto w-full max-w-sm px-6 py-24">
       <h1 className="text-xl font-medium tracking-tight">DevTrack</h1>
       <p className="mt-1 text-sm text-muted">
         {isSignup ? "Create a local account." : "Sign in to your dashboard."}
       </p>
 
       <form action={formAction} className="mt-8 space-y-4">
+        <PendingOverlay
+          label={isSignup ? "Creating your account…" : "Signing you in…"}
+        />
         {isSignup && (
           <div>
             <label htmlFor="name" className={labelClass}>
@@ -96,12 +105,12 @@ export function AuthForm({
           />
         </div>
 
-        {state.error && (
+        {message && (
           <p
             role="alert"
             className="rounded-md border border-line bg-accent-soft px-3 py-2 text-xs"
           >
-            {state.error}
+            {message}
           </p>
         )}
 

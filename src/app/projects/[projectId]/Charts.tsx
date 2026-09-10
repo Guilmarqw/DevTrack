@@ -207,7 +207,7 @@ export function LanguageTable({ rows }: { rows: LanguageRow[] }) {
       <tbody>
         {rows.map((row) => (
           <tr key={row.language} className="border-b border-line last:border-0">
-            <th scope="row" className="py-1.5 font-normal">
+            <th scope="row" className="py-1.5 text-left font-normal">
               <span className="flex items-center gap-1.5">
                 <span
                   aria-hidden

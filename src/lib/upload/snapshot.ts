@@ -1,5 +1,7 @@
 import { db } from "@/lib/db";
 import { analyze, type RawEntry } from "@/lib/analyzer/analyze";
+import { scanDependencies } from "@/lib/analyzer/dependencies";
+import { detectTech, type DetectedTech } from "@/lib/analyzer/tech";
 import { computeCompletion } from "@/lib/completion";
 import { UploadError } from "./zip";
 import type { SessionUser } from "@/lib/session";
@@ -37,6 +39,11 @@ export type SnapshotSummary = {
   totalBytes: number;
   languages: Array<{ language: string; bytes: number; lines: number }>;
   skipped: { excluded: number; binary: number; empty: number };
+  dependencyCount: number;
+  manifests: string[];
+  /** Manifests that could not be parsed, so a typo is visible not silent. */
+  manifestProblems: Array<{ path: string; reason: string }>;
+  detectedTech: string[];
 };
 
 export async function createSnapshot(
@@ -147,6 +154,12 @@ async function writeSnapshot({
   const completionPct = computeCompletion(project, project.tasks);
   const source = isNewProject ? "UPLOAD" : "RESCAN";
 
+  // Dependencies are snapshot-scoped, so they get versioned like the metrics.
+  // Tech tags are project-scoped because a person edits them, so they are
+  // reconciled against what the owner has already decided.
+  const depScan = scanDependencies(request.entries);
+  const detected = detectTech(request.entries, depScan.dependencies);
+
   const snapshotId = await db.$transaction(async (tx) => {
     const snapshot = await tx.projectSnapshot.create({
       data: {
@@ -182,6 +195,21 @@ async function writeSnapshot({
         });
       }
     }
+
+    for (const batch of chunk(depScan.dependencies, INSERT_CHUNK)) {
+      await tx.dependency.createMany({
+        data: batch.map((dep) => ({
+          snapshotId: snapshot.id,
+          name: dep.name,
+          version: dep.version,
+          manager: dep.manager,
+          scope: dep.scope,
+          sourceFile: dep.sourceFile,
+        })),
+      });
+    }
+
+    await reconcileTechTags(tx, project.id, detected);
 
     if (isNewProject) {
       await tx.activityLogEntry.create({
@@ -228,5 +256,80 @@ async function writeSnapshot({
       lines: l.lines,
     })),
     skipped: analysis.skipped,
+    dependencyCount: depScan.dependencies.length,
+    manifests: depScan.manifests,
+    manifestProblems: depScan.problems,
+    detectedTech: detected.map((t) => t.name),
   };
+}
+
+/**
+ * Folds a fresh detection into the tags the owner already has, without ever
+ * overruling them:
+ *
+ *   - a dismissed tag stays dismissed — re-scans must not resurrect a
+ *     detection the owner has already rejected;
+ *   - a MANUAL tag is never touched, whether or not it was detected this time.
+ *     Confirming a suggestion promotes it to MANUAL, which is what makes it
+ *     survive from then on;
+ *   - a DETECTED tag that is no longer detected is deleted, because it is
+ *     derived data and keeping it would show a stack the code no longer has.
+ */
+async function reconcileTechTags(
+  tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+  projectId: string,
+  detected: DetectedTech[],
+) {
+  const existing = await tx.techTag.findMany({
+    where: { projectId },
+    select: {
+      id: true,
+      name: true,
+      category: true,
+      origin: true,
+      dismissedAt: true,
+    },
+  });
+
+  const keyOf = (t: { category: string; name: string }) =>
+    `${t.category}:${t.name}`;
+  const existingByKey = new Map(existing.map((tag) => [keyOf(tag), tag]));
+  const detectedKeys = new Set(detected.map(keyOf));
+
+  for (const tech of detected) {
+    const current = existingByKey.get(keyOf(tech));
+
+    if (!current) {
+      await tx.techTag.create({
+        data: {
+          projectId,
+          name: tech.name,
+          category: tech.category,
+          origin: "DETECTED",
+          evidence: tech.evidence,
+        },
+      });
+      continue;
+    }
+
+    if (current.dismissedAt || current.origin === "MANUAL") continue;
+
+    await tx.techTag.update({
+      where: { id: current.id },
+      data: { evidence: tech.evidence },
+    });
+  }
+
+  const stale = existing.filter(
+    (tag) =>
+      tag.origin === "DETECTED" &&
+      !tag.dismissedAt &&
+      !detectedKeys.has(keyOf(tag)),
+  );
+
+  if (stale.length > 0) {
+    await tx.techTag.deleteMany({
+      where: { id: { in: stale.map((tag) => tag.id) } },
+    });
+  }
 }

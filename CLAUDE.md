@@ -91,6 +91,93 @@ session in the `session` callback.
 - **Restart the dev server after any migration.** The running server caches the
   generated Prisma client, so new models come back `undefined` until it
   restarts.
+- **Restart the dev server if MySQL is restarted under it.** The Prisma client
+  is cached on `globalThis` across HMR, and its pool does not recover when the
+  server goes away and comes back — every query then fails with
+  `pool timeout ... active=0 idle=0` for 10s until the dev server restarts.
+
+## Tech tags and dependencies
+
+Dependencies are **snapshot-scoped** and immutable, so dependency history comes
+free. Tech tags are **project-scoped** because a person edits them.
+
+Re-scan reconciliation (`reconcileTechTags` in `src/lib/upload/snapshot.ts`)
+never overrules the owner:
+
+- a tag with `dismissedAt` set stays dismissed — a re-scan must not resurrect a
+  rejected guess;
+- a `MANUAL` tag is never touched. "Confirm" promotes a `DETECTED` tag to
+  `MANUAL`, and that is what makes it survive later scans;
+- a `DETECTED` tag whose signal is gone is deleted, because it is derived data.
+
+Detection rules match dependency names **exactly**, never by substring: a
+substring match turns `eslint-plugin-react` into React and `next-auth` into
+Next.js. Every tag carries an `evidence` string so a guess is auditable.
+
+## Server actions
+
+**Never pass a `.bind()`-ed server action to `useActionState`.** On Next 16.3.4
+that combination writes to the database and then never closes its response on
+the no-JS form-POST path; the request hangs until the client gives up. A bound
+action on a plain `<form action={...}>` is fine, and an unbound action in
+`useActionState` is fine — only the combination breaks. Those forms pass ids
+through a hidden input instead, and `authorizeProject` re-checks the id, so
+reading it from the body grants nothing.
+
+Server-action POSTs also require an `Origin` header (CSRF protection), which
+matters when testing them with curl.
+
+## Loading, errors and 404s
+
+- **`/projects/[projectId]` deliberately has no `loading.tsx`.** A route-level
+  loading file wraps the route in a Suspense boundary, and Next then flushes
+  the shell with a **200** before `notFound()` can run — from the page body or
+  from `generateMetadata`. The right page renders under the wrong status. The
+  dashboard keeps its skeleton because it has no not-found path.
+- **`src/lib/db.ts` sets fail-fast driver timeouts.** Without them a dead MySQL
+  leaves a page on its loading skeleton forever with no error at all; with them
+  the request fails in a few seconds and `error.tsx` shows "start MySQL in
+  XAMPP".
+- `error.tsx` is a client component, so its text is absent from the SSR HTML —
+  verify it in a browser, not with curl.
+- Never use `outline-none` on a focusable control. The global `:focus-visible`
+  ring in `globals.css` is the only focus affordance; a border-colour change
+  alone is invisible on a button.
+
+## Theme, motion and the splash
+
+- **Theme** is `data-theme` on `<html>`, written by `BootScript` in `<head>`
+  before first paint and read with `useSyncExternalStore` (never copied into
+  state in an effect). Three states: light, dark, and absent = follow the OS.
+  `<html>` needs `suppressHydrationWarning` because that script sets an
+  attribute React also hydrates.
+- **The splash is CSS-only.** It is server-rendered so it covers the first
+  paint, and its own animation fades it out and leaves it `visibility: hidden;
+  pointer-events: none`. **Never remove it with JavaScript** — it is a
+  React-owned node, and deleting it throws
+  `removeChild`/`insertBefore` NotFoundError on the next render.
+- **React 19 hoists `<style>` out of `<noscript>`**, which is a hydration
+  failure. Do not put a `<style>` tag inside `noscript`.
+- **Scroll-driven `.reveal` is for the landing page only.** It re-hides when
+  scrolled out of view, so on a dashboard it would hide text from Ctrl+F.
+  Dashboard pages use on-load `.rise` / `.stagger`, which always end visible.
+- Every animation only touches `transform` and `opacity`, and the
+  `prefers-reduced-motion` block zeroes all durations, so nothing needs its
+  own guard.
+
+## Leaderboard and privacy
+
+The leaderboard is the only place a standard user sees another account.
+`getLeaderboard` may return a display name (falling back to the local part of
+the email, never the address) and aggregate totals — **never project names,
+file paths, or emails**. `User.showOnLeaderboard` opts out, and an opted-out
+account is excluded entirely rather than anonymised, because an anonymous row
+in a two-person instance is not anonymous.
+
+Language colour swatches are deliberately absent from the leaderboard: a
+colour map built from those totals would rank languages differently from the
+analytics page, and "colour follows the entity" is the rule the chart palette
+must keep.
 
 ## Code analysis
 

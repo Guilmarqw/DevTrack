@@ -13,6 +13,9 @@ type UploadSummary = {
   totalBytes: number;
   languages: Array<{ language: string; bytes: number }>;
   skipped: { excluded: number; binary: number; empty: number };
+  dependencyCount: number;
+  detectedTech: string[];
+  manifestProblems: Array<{ path: string; reason: string }>;
 };
 
 /**
@@ -33,6 +36,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Mirrors the server's limits in src/lib/upload/zip.ts. Checked here too so a
+// 300 MB folder is refused instantly instead of after uploading all of it.
+const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+const MAX_FILES = 50_000;
+
 export function UploadDropzone({ projectId }: { projectId?: string }) {
   const router = useRouter();
   const folderInput = useRef<HTMLInputElement>(null);
@@ -42,14 +50,36 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadSummary | null>(null);
   const [projectName, setProjectName] = useState("");
+  // What is being worked on, so "Analysing…" can say how much.
+  const [progress, setProgress] = useState<{
+    files: number;
+    bytes: number;
+  } | null>(null);
 
   const upload = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
 
+      // Refuse before spending time on the wire, and say what the limit is
+      // rather than just "too big".
+      if (files.length > MAX_FILES) {
+        setError(
+          `That folder has ${files.length.toLocaleString()} files. The limit is ${MAX_FILES.toLocaleString()}.`,
+        );
+        return;
+      }
+      const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+      if (totalBytes > MAX_TOTAL_BYTES) {
+        setError(
+          `That upload is ${formatBytes(totalBytes)}. The limit is 256 MB — check that a build folder is not being included.`,
+        );
+        return;
+      }
+
       setBusy(true);
       setError(null);
       setResult(null);
+      setProgress({ files: files.length, bytes: totalBytes });
 
       try {
         const form = new FormData();
@@ -85,6 +115,7 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
         setError("Could not reach the server. Is the dev server still running?");
       } finally {
         setBusy(false);
+        setProgress(null);
       }
     },
     [projectId, projectName, router],
@@ -122,7 +153,7 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
             onChange={(event) => setProjectName(event.target.value)}
             placeholder="Defaults to the folder or archive name"
             disabled={busy}
-            className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-accent disabled:opacity-50"
+            className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm placeholder:text-faint focus:border-accent disabled:opacity-50"
           />
         </div>
       )}
@@ -135,7 +166,7 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
       >
         <input {...getInputProps()} />
 
-        <p className="text-sm font-medium">
+        <p className="text-sm font-medium" role={busy ? "status" : undefined}>
           {busy
             ? "Analysing…"
             : isDragActive
@@ -143,8 +174,9 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
               : "Drop a project folder or a .zip here"}
         </p>
         <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted">
-          node_modules, build output, lockfiles and binaries are skipped
-          automatically.
+          {busy && progress
+            ? `${progress.files.toLocaleString()} ${progress.files === 1 ? "file" : "files"} · ${formatBytes(progress.bytes)} — counting lines and reading manifests.`
+            : "node_modules, build output, lockfiles and binaries are skipped automatically."}
         </p>
 
         <div className="mt-4 flex items-center justify-center gap-2">
@@ -221,10 +253,35 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
                 ` +${result.languages.length - 4} more`}
             </p>
           )}
+          {(result.dependencyCount > 0 || result.detectedTech.length > 0) && (
+            <p className="mt-1 text-muted">
+              {result.dependencyCount} dependencies
+              {result.detectedTech.length > 0 && (
+                <>
+                  {" · "}
+                  {result.detectedTech.slice(0, 4).join(", ")}
+                  {result.detectedTech.length > 4 &&
+                    ` +${result.detectedTech.length - 4} more`}
+                </>
+              )}
+            </p>
+          )}
           <p className="mt-1 text-faint">
             Skipped {result.skipped.excluded} excluded,{" "}
             {result.skipped.binary} binary, {result.skipped.empty} empty
           </p>
+          {result.manifestProblems.length > 0 && (
+            <ul className="mt-2 space-y-0.5">
+              {/* A manifest that failed to parse is reported rather than
+                  silently contributing nothing — usually it is a real syntax
+                  error in the file. */}
+              {result.manifestProblems.map((problem) => (
+                <li key={problem.path} className="text-muted">
+                  Could not read {problem.path} — {problem.reason}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>

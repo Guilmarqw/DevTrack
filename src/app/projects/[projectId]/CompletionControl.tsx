@@ -71,7 +71,7 @@ export function CompletionControl({
           max={100}
           defaultValue={manualPct}
           disabled={selected !== "MANUAL"}
-          className="tabular mt-1 w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm outline-none focus:border-accent disabled:opacity-50"
+          className="tabular mt-1 w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:border-accent disabled:opacity-50"
         />
       </div>
 

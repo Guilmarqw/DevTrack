@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireUser, projectScope } from "@/lib/session";
 import { db } from "@/lib/db";
-import { SignOutButton } from "./SignOutButton";
+import { DashboardHeader } from "@/components/DashboardHeader";
 import { UploadDropzone } from "./UploadDropzone";
 
 export const metadata = { title: "Dashboard · DevTrack" };
@@ -27,7 +27,7 @@ export default async function DashboardPage() {
       name: true,
       owner: { select: { email: true } },
       _count: { select: { snapshots: true } },
-      // Newest snapshot only — the full series is phase 5's problem.
+      // Newest snapshot only; the full series is read on the detail page.
       snapshots: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -47,20 +47,20 @@ export default async function DashboardPage() {
   });
 
   return (
-    <main className="mx-auto w-full max-w-3xl px-6 py-16">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-medium tracking-tight">Dashboard</h1>
-          <p className="mt-1 text-sm text-muted">
-            {user.name ?? user.email}
-            <span className="text-faint"> · </span>
-            <span className="text-xs uppercase tracking-wide">{user.role}</span>
-          </p>
-        </div>
-        <SignOutButton />
-      </header>
+    <>
+      <DashboardHeader user={user} />
 
-      <section className="mt-10">
+      <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-10">
+      <div className="rise">
+        <h1 className="text-xl font-medium tracking-tight">Projects</h1>
+        <p className="mt-1 text-sm text-muted">
+          {user.role === "ADMIN"
+            ? "Every account's projects."
+            : "Everything you are tracking."}
+        </p>
+      </div>
+
+      <section className="rise mt-8">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
           Add a project
         </h2>
@@ -69,9 +69,9 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      <section className="mt-10">
+      <section className="rise mt-10">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
-          Projects
+          Tracked projects
         </h2>
 
         {projects.length === 0 ? (
@@ -83,7 +83,7 @@ export default async function DashboardPage() {
             </p>
           </div>
         ) : (
-          <ul className="mt-3 divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
+          <ul className="stagger mt-3 divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
             {projects.map((project) => {
               const latest = project.snapshots[0];
               return (
@@ -134,10 +134,13 @@ export default async function DashboardPage() {
             })}
           </ul>
         )}
-        <p className="mt-3 text-xs text-faint">
-          Project detail pages and charts arrive in phase 5.
-        </p>
+        {projects.length > 0 && (
+          <p className="mt-3 text-xs text-faint">
+            Open a project for its language mix, history and tasks.
+          </p>
+        )}
       </section>
-    </main>
+      </main>
+    </>
   );
 }
