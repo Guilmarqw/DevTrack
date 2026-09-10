@@ -25,10 +25,11 @@ const CATEGORY_LABEL: Record<TechCategory, string> = {
   FRONTEND: "Front end",
   BACKEND: "Back end",
   DATABASE: "Database",
+  CLOUD: "Cloud",
   OTHER: "Other",
 };
 
-const ORDER: TechCategory[] = ["FRONTEND", "BACKEND", "DATABASE", "OTHER"];
+const ORDER: TechCategory[] = ["FRONTEND", "BACKEND", "DATABASE", "CLOUD", "OTHER"];
 
 function AddButton() {
   const { pending } = useFormStatus();

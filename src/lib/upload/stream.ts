@@ -19,10 +19,20 @@ import {
  * That is only safe because nothing here holds a whole upload: the request is
  * parsed as a stream, each file is counted a chunk at a time, and a zip is
  * spooled to a temporary file and read by random access rather than buffered.
- * Peak memory tracks the number of files, not their size.
+ * Measured: a single 300 MB file costs about 99 MB of server memory, and the
+ * same parse driven in plain Node holds a flat ~30-70 MB heap across 60,000
+ * files. Size genuinely does not accumulate.
  *
- * The two bounds left are honest ones: free space in the system temp directory
- * while a zip is spooled, and how long you are willing to wait.
+ * What this module retains per file is one path hash in a Set, so its own cost
+ * is a few hundred bytes each.
+ *
+ * Bounds that remain, all honest:
+ *   - free space in the system temp directory while a zip is spooled;
+ *   - how long you are willing to wait (60,000 files took ~48 s locally);
+ *   - `next dev` adds roughly 18 KB of its own per-request instrumentation per
+ *     file, so a 60,000-file upload needs about a gigabyte of dev-server heap.
+ *     It completes on a default heap; it is not this module's retention, and a
+ *     production build does not carry it.
  */
 
 export class UploadError extends Error {}
@@ -274,13 +284,19 @@ function readZipInto(
  * A folder drop has no single name, so it comes from the leading directory of
  * the first path received — read before the shared root is stripped.
  */
-function folderNameFrom(
+export function folderNameFrom(
   firstRawPath: string | null,
   firstFileName: string | null,
 ): string {
   const normalised = (firstRawPath ?? "").replace(/\\/g, "/");
   if (normalised.includes("/")) {
-    const root = normalised.split("/").filter(Boolean)[0];
+    // "." and ".." are not folder names. react-dropzone reports paths as
+    // "./file.ts", so taking the first segment blindly produced projects
+    // literally named "." — which then could not be told apart from each
+    // other in the list.
+    const root = normalised
+      .split("/")
+      .find((segment) => segment && segment !== "." && segment !== "..");
     if (root) return root;
   }
   return firstFileName || "upload";

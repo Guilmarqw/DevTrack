@@ -19,7 +19,11 @@ type UploadSummary = {
   skipped: { excluded: number; binary: number; empty: number };
   dependencyCount: number;
   detectedTech: string[];
-  manifestProblems: Array<{ path: string; reason: string }>;
+  findings: Array<{
+    severity: "ERROR" | "WARN" | "INFO";
+    title: string;
+    path: string | null;
+  }>;
 };
 
 /**
@@ -31,7 +35,10 @@ type UploadSummary = {
 function relativePathOf(file: File): string {
   const withPath = file as File & { path?: string };
   const candidate = withPath.path || file.webkitRelativePath || file.name;
-  return candidate.replace(/^\/+/, "");
+  // Strip a leading "./" as well as "/". react-dropzone reports "./a/b.ts",
+  // and the server's normalizePath drops that prefix anyway — leaving it on
+  // here meant the live upload log showed a path the database never stored.
+  return candidate.replace(/^\.\//, "").replace(/^\/+/, "");
 }
 
 function formatBytes(bytes: number): string {
@@ -56,6 +63,11 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
       if (files.length === 0) return;
 
       const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+      // Send order, which is the order the log shows them in.
+      const manifest = files.map((file) => ({
+        path: relativePathOf(file),
+        size: file.size,
+      }));
 
       setBusy(true);
       setError(null);
@@ -65,6 +77,7 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
         sentBytes: 0,
         totalBytes,
         files: files.length,
+        manifest,
       });
 
       try {
@@ -108,13 +121,19 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
               sentBytes: event.loaded,
               totalBytes: event.total,
               files: files.length,
+              manifest,
             });
           });
 
           // Once the body is sent the server starts counting, which has no
           // honest percentage — switch to the indeterminate phase.
           xhr.upload.addEventListener("load", () => {
-            setPhase({ kind: "analysing", totalBytes, files: files.length });
+            setPhase({
+              kind: "analysing",
+              totalBytes,
+              files: files.length,
+              manifest,
+            });
           });
 
           xhr.addEventListener("load", () =>
@@ -305,17 +324,37 @@ export function UploadDropzone({ projectId }: { projectId?: string }) {
             Skipped {result.skipped.excluded} excluded,{" "}
             {result.skipped.binary} binary, {result.skipped.empty} empty
           </p>
-          {result.manifestProblems.length > 0 && (
-            <ul className="mt-2 space-y-0.5">
-              {/* A manifest that failed to parse is reported rather than
-                  silently contributing nothing — usually it is a real syntax
-                  error in the file. */}
-              {result.manifestProblems.map((problem) => (
-                <li key={problem.path} className="text-muted">
-                  Could not read {problem.path} — {problem.reason}
-                </li>
-              ))}
-            </ul>
+          {/* Errors and warnings only. The notes are worth a count but not a
+              queue-jump into a success panel, and all of them are on the
+              project page — these rows are stored on the snapshot now, so
+              nothing here is the only copy. */}
+          {result.findings.length > 0 && (
+            <div className="mt-2">
+              <ul className="space-y-0.5">
+                {result.findings
+                  .filter((finding) => finding.severity !== "INFO")
+                  .slice(0, 4)
+                  .map((finding, index) => (
+                    <li
+                      key={`${finding.title}-${finding.path ?? index}`}
+                      style={{
+                        color:
+                          finding.severity === "ERROR"
+                            ? "var(--color-sev-error)"
+                            : "var(--color-sev-warn)",
+                      }}
+                    >
+                      {finding.title}
+                      {finding.path && ` — ${finding.path}`}
+                    </li>
+                  ))}
+              </ul>
+              <p className="mt-1 text-faint">
+                {result.findings.length}{" "}
+                {result.findings.length === 1 ? "finding" : "findings"} in all,
+                listed on the project page.
+              </p>
+            </div>
           )}
         </div>
       )}

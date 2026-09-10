@@ -185,12 +185,24 @@ export type LeaderboardEntry = {
   topLanguage: string | null;
 };
 
+export type LanguageStanding = {
+  userId: string;
+  displayName: string;
+  isViewer: boolean;
+  lines: number;
+  /** Share of all lines written in this language across every account. */
+  share: number;
+};
+
 export type LanguageLeader = {
   language: string;
   displayName: string;
   isViewer: boolean;
   lines: number;
   contenders: number;
+  /** Every account with lines in this language, best first. */
+  standings: LanguageStanding[];
+  totalLines: number;
 };
 
 /**
@@ -270,12 +282,24 @@ export async function getLeaderboard(viewer: SessionUser) {
     .map(([language, contenders]) => {
       const sorted = [...contenders].sort((a, b) => b.lines - a.lines);
       const winner = sorted[0];
+      const totalLines = sorted.reduce((sum, c) => sum + c.lines, 0);
+
       return {
         language,
         displayName: winner.displayName,
         isViewer: winner.userId === viewer.id,
         lines: winner.lines,
         contenders: sorted.length,
+        totalLines,
+        // The full field, not just the winner, so the comparison view can show
+        // how close it actually was.
+        standings: sorted.map((c) => ({
+          userId: c.userId,
+          displayName: c.displayName,
+          isViewer: c.userId === viewer.id,
+          lines: c.lines,
+          share: totalLines > 0 ? (c.lines / totalLines) * 100 : 0,
+        })),
       };
     })
     // Most-contested languages first: a language two people write in is a more

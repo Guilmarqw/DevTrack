@@ -55,6 +55,33 @@
   --color-axis: #c3c2b7;
 }
 
+/* Podium colours for the leaderboard, kept outside the categorical series
+   scale so a rank badge can never be mistaken for a data series.
+
+   Declared in a plain :root rule rather than @theme on purpose. Tailwind v4
+   only emits a @theme variable when its name appears literally in scanned
+   source, and RankBadge builds the name at runtime — so from @theme these
+   were silently dropped from the light-mode CSS and every badge rendered with
+   an unresolved stroke. Plain CSS is always emitted. */
+:root {
+  --color-rank-1: #a97400;
+  --color-rank-2: #6b7280;
+  --color-rank-3: #9a5b20;
+
+  /* Finding severity. Also outside the series scale, and for the same reason:
+     "this file is broken" is not a data series. These are used as text and as
+     a 2px rule on the surface colour, so they are chosen for contrast rather
+     than for vividness — the pure amber of --color-series-4 reaches only
+     2.2:1 on white and would be unreadable as a label. These measure 6.54:1
+     and 6.33:1 on the light surface, 7.29:1 and 7.86:1 on the dark one. */
+  --color-sev-error: #b3261e;
+  --color-sev-warn: #8a5300;
+  /* "Nothing wrong found". Not --color-series-6: that green reaches only
+     3.52:1 on the dark surface, which is fine for a chart mark and not fine
+     for a word. This one is 6.45:1 light and 8.45:1 dark. */
+  --color-sev-ok: #146c43;
+}
+
 /* The dark values are declared under two scopes: the media query covers the
    OS setting, and the [data-theme] scope lets an explicit choice win in both
    directions. The :not([data-theme="light"]) guard is what lets a light stamp
@@ -86,6 +113,14 @@
 
     --color-grid: #2c2c2a;
     --color-axis: #383835;
+
+    --color-rank-1: #e8b53c;
+    --color-rank-2: #b6bec9;
+    --color-rank-3: #d08a45;
+
+    --color-sev-error: #f28b82;
+    --color-sev-warn: #e0a33e;
+    --color-sev-ok: #5cc98b;
   }
 }
 
@@ -112,6 +147,14 @@
 
   --color-grid: #2c2c2a;
   --color-axis: #383835;
+
+  --color-rank-1: #e8b53c;
+  --color-rank-2: #b6bec9;
+  --color-rank-3: #d08a45;
+
+  --color-sev-error: #f28b82;
+  --color-sev-warn: #e0a33e;
+  --color-sev-ok: #5cc98b;
 }
 
 body {
@@ -144,6 +187,13 @@ body {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    /* Delays have to go too, not just durations. A sequence built from delays
+       — the hero's type-then-transform, or any .stagger list — otherwise still
+       waits out its full choreography before snapping to the end, which for
+       the hero meant a couple of seconds of held from-state. Zeroing both is
+       what makes "no motion" mean "already arrived". */
+    animation-delay: 0.01ms !important;
+    transition-delay: 0.01ms !important;
   }
 }
 
@@ -239,6 +289,58 @@ body {
       opacity: 1 !important;
       transform: none !important;
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Hero: a scan log types itself out, then becomes the snapshot it produced.
+
+   The metaphor is the product's own one-liner — code goes in, measurements
+   come out — so the animation is the explanation rather than decoration.
+
+   `clip-path` rather than `width` for the typing. It is the one deviation from
+   the transform/opacity rule above, and it keeps the *intent* of that rule:
+   clip-path is composited and never triggers layout, whereas animating width
+   would reflow a text run 30 times a second. With a monospace font and
+   steps(n) where n is the character count, the reveal lands exactly on
+   character boundaries.
+
+   Both layers sit in the same grid cell, so the container is always as tall as
+   the taller of the two and nothing shifts when they swap. Every animation
+   ends on the state that matters — log gone, card shown — which is also where
+   the reduced-motion block lands instantly.
+   --------------------------------------------------------------------------- */
+
+@keyframes devtrack-type {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes devtrack-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes devtrack-scan-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+
+@keyframes devtrack-scan-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 

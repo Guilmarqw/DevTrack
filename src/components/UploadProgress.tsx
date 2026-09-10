@@ -1,11 +1,24 @@
 "use client";
 
 import { BootMark } from "./BootMark";
+import { UploadScanLog, type UploadFile } from "./UploadScanLog";
 
 export type UploadPhase =
   | { kind: "idle" }
-  | { kind: "uploading"; sentBytes: number; totalBytes: number; files: number }
-  | { kind: "analysing"; totalBytes: number; files: number };
+  | {
+      kind: "uploading";
+      sentBytes: number;
+      totalBytes: number;
+      files: number;
+      /** Paths and sizes, in send order, for the live log. */
+      manifest: UploadFile[];
+    }
+  | {
+      kind: "analysing";
+      totalBytes: number;
+      files: number;
+      manifest: UploadFile[];
+    };
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -88,6 +101,16 @@ export function UploadProgress({ phase }: { phase: UploadPhase }) {
           <div className="route-progress relative h-full w-full" />
         )}
       </div>
+
+      <UploadScanLog
+        manifest={phase.manifest}
+        fraction={
+          uploading && phase.totalBytes > 0
+            ? phase.sentBytes / phase.totalBytes
+            : 1
+        }
+        done={!uploading}
+      />
     </div>
   );
 }

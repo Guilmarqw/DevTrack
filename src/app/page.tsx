@@ -3,6 +3,8 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { StackShowcase } from "@/components/StackShowcase";
+import { HeroScan } from "@/components/HeroScan";
 
 export const metadata: Metadata = {
   title: "DevTrack — personal developer analytics",
@@ -65,7 +67,7 @@ const MEASURES = [
   },
   {
     title: "Tech stack",
-    body: "Front end, back end and database inferred from 84 rules across manifests and config files. Every guess shows its evidence, and you can keep it or dismiss it for good.",
+    body: "Front end, back end, database and cloud services inferred from 152 rules across manifests and config files. Every guess shows its evidence, and you can keep it or dismiss it for good.",
   },
 ];
 
@@ -102,73 +104,6 @@ const LOCAL_POINTS = [
   },
 ];
 
-/**
- * A miniature of the real language bar, drawn with the same validated palette
- * as the charts. Labelled as an example so it is never mistaken for the
- * reader's own data.
- */
-function ExampleSnapshot() {
-  const slices = [
-    { language: "TypeScript", percent: 41.2, color: "var(--color-series-1)" },
-    { language: "Shell", percent: 15.8, color: "var(--color-series-2)" },
-    { language: "Python", percent: 12.4, color: "var(--color-series-3)" },
-    { language: "CSS", percent: 9.1, color: "var(--color-series-4)" },
-    { language: "Other", percent: 21.5, color: "var(--color-series-other)" },
-  ];
-
-  return (
-    <figure className="lift rounded-xl border border-line bg-surface p-5">
-      <figcaption className="flex items-baseline justify-between">
-        <span className="text-xs font-medium text-muted">Example snapshot</span>
-        <span className="text-xs text-faint">not your data</span>
-      </figcaption>
-
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        {[
-          { label: "Lines", value: "9,105" },
-          { label: "Files", value: "121" },
-          { label: "Complete", value: "72%" },
-        ].map((stat) => (
-          <div key={stat.label}>
-            <p className="text-xs text-muted">{stat.label}</p>
-            <p className="mt-0.5 text-xl font-semibold tracking-tight">
-              {stat.value}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {/* Same mark spec as the real chart: a 2px surface gap does the
-          separating, never a stroke drawn around each segment. */}
-      <div className="mt-5 flex h-4 w-full overflow-hidden rounded">
-        {slices.map((slice, index) => (
-          <div
-            key={slice.language}
-            style={{
-              width: `${slice.percent}%`,
-              backgroundColor: slice.color,
-              marginLeft: index === 0 ? 0 : 2,
-            }}
-          />
-        ))}
-      </div>
-
-      <ul className="mt-3 flex flex-wrap gap-x-3 gap-y-1.5">
-        {slices.map((slice) => (
-          <li key={slice.language} className="flex items-center gap-1.5 text-xs">
-            <span
-              aria-hidden
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: slice.color }}
-            />
-            <span>{slice.language}</span>
-            <span className="tabular text-muted">{slice.percent}%</span>
-          </li>
-        ))}
-      </ul>
-    </figure>
-  );
-}
 
 export default async function Home() {
   const [user, database] = await Promise.all([
@@ -263,7 +198,7 @@ export default async function Home() {
             </div>
 
             <div className="rise" style={{ animationDelay: "120ms" }}>
-              <ExampleSnapshot />
+              <HeroScan />
             </div>
           </div>
         </section>
@@ -285,6 +220,8 @@ export default async function Home() {
             </dl>
           </div>
         </section>
+
+        <StackShowcase />
 
         <section className="reveal border-t border-line">
           <div className="mx-auto w-full max-w-5xl px-6 py-16">

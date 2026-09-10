@@ -21,6 +21,12 @@ import { TaskList } from "./TaskList";
 import { CompletionControl } from "./CompletionControl";
 import { TechTags } from "./TechTags";
 import { Dependencies } from "./Dependencies";
+import { Findings } from "./Findings";
+import { HealthBadge } from "@/components/HealthBadge";
+import { projectHealth } from "@/lib/health";
+import { ProjectAnalysis } from "./ProjectAnalysis";
+import { DeleteProject } from "./DeleteProject";
+import { analyseProject } from "@/lib/projectAnalysis";
 import { UploadDropzone } from "@/app/dashboard/UploadDropzone";
 
 export const dynamic = "force-dynamic";
@@ -160,7 +166,15 @@ export default async function ProjectPage({
     activity,
     completionPct,
     dependencies,
+    findings,
   } = detail;
+
+  const health = projectHealth({
+    scanned: latest?.findingsScanned ?? false,
+    findings,
+  });
+
+  const analysis = analyseProject({ snapshots, dependencies });
 
   const activeTags = project.techTags.filter((tag) => !tag.dismissedAt);
   const dismissedTags = project.techTags.filter((tag) => tag.dismissedAt);
@@ -200,7 +214,30 @@ export default async function ProjectPage({
       </nav>
 
       <header className="mt-4">
-        <h1 className="text-xl font-medium tracking-tight">{project.name}</h1>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <h1 className="text-xl font-medium tracking-tight">{project.name}</h1>
+          <HealthBadge health={health} />
+
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <a
+              href="#add-files"
+              className="press rounded-md border border-line px-3 py-1.5 text-xs font-medium transition-colors hover:border-accent hover:text-accent"
+            >
+              Add files
+            </a>
+            {/* Only offered when it would tell you something you do not
+                already have. A project whose latest snapshot was scanned is
+                already showing its findings below. */}
+            {health.level === "UNSCANNED" && (
+              <a
+                href="#add-files"
+                className="press rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink transition-opacity hover:opacity-90"
+              >
+                Check health
+              </a>
+            )}
+          </div>
+        </div>
         <p className="mt-1 text-sm text-muted">
           {snapshots.length} {snapshots.length === 1 ? "snapshot" : "snapshots"}
           {latest && (
@@ -298,6 +335,37 @@ export default async function ProjectPage({
 
       <section className="mt-10">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+          Project analysis
+        </h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+          What this project is made of and which way it is moving. Account-wide
+          figures across every project live on{" "}
+          <Link href="/dashboard/analytics" className="text-accent hover:underline">
+            Analytics
+          </Link>
+          .
+        </p>
+        <div className="mt-3">
+          <ProjectAnalysis analysis={analysis} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+          Findings
+        </h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+          Syntax and hygiene checks from the latest snapshot. These are limited
+          on purpose: DevTrack reports only what it can be certain of from the
+          files themselves, and never compiles, lints or type-checks your code.
+        </p>
+        <div className="mt-3">
+          <Findings rows={findings} scanned={latest?.findingsScanned ?? false} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
           Dependencies
         </h2>
         <p className="mt-1 text-xs text-muted">
@@ -349,15 +417,40 @@ export default async function ProjectPage({
         </div>
       </section>
 
-      <section className="mt-10">
+      {/* The anchor the header's "Add files" and "Check health" buttons jump
+          to. Both land here because both need the same thing: the folder. */}
+      <section id="add-files" className="mt-10 scroll-mt-6">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
-          Add a snapshot
+          Add files or re-scan
         </h2>
-        <p className="mt-1 text-xs text-muted">
-          Re-upload this project to record how it has changed.
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+          Drop the project folder in again — including any files you have added
+          since — and DevTrack records a new snapshot beside the old ones.
+          Nothing is overwritten, and this is also what re-runs the health
+          checks.
         </p>
         <div className="mt-3">
           <UploadDropzone projectId={project.id} />
+        </div>
+      </section>
+
+      <section className="mt-12 border-t border-line pt-6">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+          Danger zone
+        </h2>
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+          Deleting a project removes its measurements and history for good.
+        </p>
+        <div className="mt-3">
+          <DeleteProject
+            projectId={project.id}
+            projectName={project.name}
+            counts={{
+              snapshots: snapshots.length,
+              tasks: project.tasks.length,
+              findings: findings.length,
+            }}
+          />
         </div>
       </section>
     </main>

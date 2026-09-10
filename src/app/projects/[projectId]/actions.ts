@@ -1,5 +1,6 @@
 "use server";
 
+import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireUser, projectScope } from "@/lib/session";
 import { clampPercent } from "@/lib/completion";
@@ -134,6 +135,43 @@ export async function deleteTask(projectId: string, taskId: string) {
     }),
   ]);
 
+}
+
+/**
+ * Deletes a project and everything derived from it.
+ *
+ * Every relation cascades — snapshots, language stats, per-file rows,
+ * dependencies, findings, tasks and the whole activity feed — and none of it
+ * is recoverable, because DevTrack never kept the source it was measured from.
+ * Re-uploading the folder produces a *new* project starting from zero history.
+ *
+ * No PROJECT_DELETED activity entry: `ActivityLogEntry.projectId` is required
+ * and cascades, so the row would be deleted in the same statement that wrote
+ * it. The project's history genuinely ends here, which is the honest outcome
+ * for a hard delete.
+ *
+ * `confirm` must carry the literal string "delete". The UI is a two-step
+ * confirmation that states what will be destroyed, and this is the server-side
+ * half of that gate — a stray POST cannot destroy a project by accident.
+ */
+export async function deleteProject(
+  _prev: TaskActionState,
+  formData: FormData,
+): Promise<TaskActionState> {
+  const projectId = String(formData.get("projectId") ?? "");
+  const confirmed = String(formData.get("confirm") ?? "") === "delete";
+
+  const auth = await authorizeProject(projectId);
+  if (!auth) return { error: "That project could not be found." };
+  if (!confirmed) {
+    return { error: "Deletion was not confirmed, so nothing was removed." };
+  }
+
+  await db.project.delete({ where: { id: auth.project.id } });
+
+  // Outside any try/catch: redirect() signals by throwing, and catching it
+  // would turn a successful delete into a swallowed error.
+  redirect("/dashboard?deleted=" + encodeURIComponent(auth.project.name));
 }
 
 /** Unbound for the same reason as createTask — see the note there. */

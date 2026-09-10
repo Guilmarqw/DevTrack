@@ -13,13 +13,16 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
-    "test:analyzer": "tsx scripts/test-analyzer.ts"
+    "test:analyzer": "tsx scripts/test-analyzer.ts",
+    "test:showcase": "tsx scripts/test-showcase.ts",
+    "test": "npm run test:analyzer && npm run test:showcase"
   },
   "dependencies": {
     "@prisma/adapter-mariadb": "^7.10.0",
     "@prisma/client": "7.10.0",
     "bcryptjs": "^3.0.3",
     "busboy": "^1.6.0",
+    "js-yaml": "4.3.2",
     "next": "16.3.4",
     "next-auth": "^5.0.0-beta.32",
     "prisma": "7.10.0",
@@ -32,6 +35,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/busboy": "^1.5.4",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -61,6 +61,17 @@ and explain before substituting.
   offline-reliability goal. Use the system font stack defined in `globals.css`.
 - **Tailwind v4.** Configuration is CSS-first in `src/app/globals.css` via
   `@theme`. There is no `tailwind.config.js` and none should be added.
+  **A `@theme` variable is only emitted when its name appears literally in
+  scanned source.** A name built at runtime — `var(--color-rank-${n})` — is
+  invisible to the scanner, so the variable is dropped and every reference
+  resolves to nothing. It fails silently, and only in the mode whose values
+  came from `@theme`: the rank colours survived in dark mode, where they are
+  hand-written plain CSS, and vanished in light. A token read through a
+  computed name belongs in a plain `:root` rule, which is always emitted.
+  `@theme` must also stay top-level — nesting one inside `@media` crashed the
+  Turbopack PostCSS worker with `0xc0000142`, and the giveaway is that
+  `npm run build` still passes while every page returns a 500. Dark mode
+  overrides those same properties in an ordinary `:root` media query instead.
 - **Next.js 16 specifics.** `params`, `searchParams`, `cookies()`, and
   `headers()` are all async and must be awaited. `middleware.ts` is now
   `proxy.ts` exporting a `proxy` function, and it cannot use the edge runtime.
@@ -179,6 +190,193 @@ colour map built from those totals would rank languages differently from the
 analytics page, and "colour follows the entity" is the rule the chart palette
 must keep.
 
+## Uploads have no size limit
+
+`src/lib/upload/stream.ts` parses multipart with Busboy straight off the
+request stream and counts each file a chunk at a time; a zip is spooled to a
+temp file and read by random access, because a zip's central directory is at
+the end and cannot be read forward-only. **Do not reintroduce
+`request.formData()`** — it buffers the whole upload, which is the only reason
+size caps ever existed.
+
+Two constraints the client must keep:
+
+- each file's relative path is sent in a `paths` field **immediately before**
+  its file part, so the server knows where bytes belong as they arrive;
+- `projectId` travels in the **query string**, not the body, so the route can
+  read `trackFiles` without consuming the stream.
+
+Measured behaviour: one 300 MB file costs ~99 MB of server memory; the same
+parse in plain Node holds a flat ~30-70 MB heap across 60,000 files. `next dev`
+adds ~18 KB per file of its own instrumentation, so a 60,000-file upload needs
+about a gigabyte of dev-server heap — it completes on a default heap, and that
+cost is the dev server's, not the upload code's.
+
+Byte counts are `BigInt` columns so a project has no size ceiling. Convert with
+`Number()` at the query boundary — a bigint cannot be serialised into a client
+component, and Number is exact to 9 PB.
+
+## Findings
+
+`src/lib/analyzer/findings.ts` reports what DevTrack can say is *wrong*, as
+opposed to measured. Two kinds only: **syntax** (a structured file that does
+not parse) and **hygiene** (facts about which files exist).
+
+**It is not a linter or a type checker, and must not become one.** Those need
+the whole tree on disk with its dependencies installed, and the editor that
+wrote the code already runs them. Every rule here is answerable with certainty
+from what the analyzer already holds, which is what makes "no findings" worth
+anything. The panel says so in as many words — do not quietly widen the claim.
+
+The governing rule is **a false positive is much worse than a false negative**.
+One wrong "your secrets are exposed" teaches the owner to ignore the whole
+panel. Concretely:
+
+- `tsconfig.json` and friends are **JSONC** — comments and trailing commas are
+  legal and ubiquitous. `relaxJsonc` blanks them out *without changing length*,
+  so a reported line number still points at the file's own line. `package.json`
+  stays strict, because npm is strict.
+- A YAML file containing `{{` or `{%` is a template and is not judged; an
+  `unknown tag` error (CloudFormation's `!Ref`) is not reported either.
+  Multi-document YAML needs `loadAll`, not `load`.
+- **TOML is deliberately not validated** — there is no parser in the tree, and
+  a hand-rolled one would invent errors. The Prisma check is brace balance
+  only, and its wording says exactly that.
+- A body that stopped at its capture limit is a **prefix, not a file**. Parsing
+  one would report a syntax error in a file that is fine, so `add()` compares
+  `captured.length` against `file.bytes` and skips anything truncated.
+- `.env.example` and friends exist to be committed and are never flagged.
+
+`HygieneCollector` has **two** observation entry points and the distinction
+matters: `observeRaw` sees every path including excluded ones, because
+lockfiles are on the exclusion list and a collector fed only counted files
+reports "no lockfile" for every project that has one. `observe` sees only
+counted paths, so `node_modules/x/test/a.js` is not taken as evidence that
+this project has tests.
+
+Findings are **snapshot-scoped and immutable**, like `Dependency`. There is no
+dismiss flag: a finding is derived from the code, so the way to clear one is to
+fix the file and re-scan. That is the opposite of a `TechTag`, which is a guess
+the owner is entitled to overrule.
+
+`ProjectSnapshot.findingsScanned` exists because "nothing found" and "never
+looked" are indistinguishable from an empty finding set, and every snapshot
+predating the feature is the second. It defaults to false so the backfill is
+correct. The panel checks rows *before* the flag, so a snapshot written between
+the feature and the flag still renders correctly.
+
+`--color-sev-*` live in plain `:root`, outside the categorical series scale,
+for the same reason the rank colours do — "this file is broken" is not a data
+series. They are picked for contrast, not vividness: `--color-series-4` amber
+reaches only 2.2:1 on white and is unreadable as a label.
+
+`js-yaml` is a direct dependency. It was already in the tree transitively,
+which is not the same as being safe to import.
+
+## Health, and per-project analysis
+
+**The health indicator is not a score.** `src/lib/health.ts` reports the worst
+thing the latest scan found — Needs attention / Minor issues / No issues found
+/ Not scanned — plus the counts behind it. A number out of 100 would need
+weights, and nothing in the data says whether an unignored `.env` is worth
+twenty points or forty, so every weight would be invented. `detail` always
+states what the level was derived from. Like the Findings panel, it checks
+rows *before* `findingsScanned`, so a snapshot written between the two
+features is not reported as unscanned while listing findings.
+
+`src/lib/projectAnalysis.ts` is deliberately separate from
+`getAccountAnalytics`. The account page answers "how much am I building, and
+where"; the project section answers "what is *this* codebase made of, and
+which way is it moving". A language mix across every project describes your
+habits; the same mix inside one project describes its architecture. Keep them
+apart — merged, the chart answers neither.
+
+Composition by role reuses `LANGUAGE_INFO.role`, so it needs no new data. Two
+honesty rules hold there:
+
+- a per-day rate is **null** under a day of tracked history, because three
+  re-scans in one afternoon extrapolate to tens of thousands of lines a day;
+- `Other` — the analyzer's own catch-all — is surfaced as Unclassified rather
+  than dropped. A project that is 40% unrecognised should say so.
+
+## Deleting, adding files, and re-checking health
+
+**Delete is a hard delete and every relation cascades** — snapshots, language
+stats, per-file rows, dependencies, findings, tasks and the whole activity
+feed. There is no archive, no undo, and nothing to rebuild from, because
+DevTrack never kept the source. `DeleteProject` is therefore two-step: the
+first click reveals real counts of what will go, and only the second submits.
+The server re-checks a `confirm` field so the gate is not purely visual.
+
+No `PROJECT_DELETED` activity entry exists and none should be added:
+`ActivityLogEntry.projectId` is required and cascades, so the row would be
+deleted by the same statement that wrote it.
+
+**"Add files", "Check health" and "Re-scan" are all one flow**, and all three
+buttons anchor to `#add-files`. That is not laziness — they genuinely need the
+same thing. Findings are computed from file contents, and DevTrack stores
+measurements rather than source, so **there is nothing on the machine to
+re-scan**. A health check has to see the files again. The UI says so wherever
+it offers the button; do not add a "re-check" that silently does less than the
+reader expects, and do not imply stored data can be re-analysed.
+
+"Check health" only appears when the latest snapshot is unscanned — a scanned
+project is already showing its findings further down the page. The dashboard's
+**Not health-checked** section lists exactly the projects where the answer is
+unknown rather than good, and disappears when there are none.
+
+## The upload scan log
+
+`UploadScanLog` shows **real paths, not a fake typing effect**. The client
+already holds every file's relative path and size and XHR reports true
+bytes-sent, so the log is the actual send queue. `cursorIndex` lives in
+`src/lib/uploadCursor.ts` — plain TypeScript, so it is testable without a JSX
+runtime — and walks cumulative sizes rather than treating files as equal, or
+one 300 MB file among a thousand small ones would make the log sprint to the
+end and sit there.
+
+Which file is in flight is an approximation, because multipart framing means
+bytes-sent does not line up exactly with the sum of file sizes. That is why
+nothing in the panel claims a file has *finished*: the log says "sending" and
+the byte counter beside it is exact. The log is `aria-hidden` — the phase
+label and counters are already in an `aria-live` region, and a path list
+changing every few hundred milliseconds would flood it.
+
+**`relativePathOf` strips a leading `./`.** react-dropzone reports paths as
+`./a/b.ts` and the server's `normalizePath` drops that prefix, so leaving it on
+the client meant the live log displayed a path the database never stored. The
+same prefix used to reach `folderNameFrom`, whose first-segment rule then
+produced projects literally named `.` — it now skips `.` and `..` segments.
+
+## The landing hero animation
+
+`src/components/HeroScan.tsx` types out a scan log and transforms it into the
+snapshot it produced. The log's numbers come from the same `SNAPSHOT` constant
+the card renders, so the two can never disagree.
+
+- **CSS only, no client JavaScript.** Per-line delays are computed at render.
+- **`clip-path` for the typing, not `width`.** The one deviation from the
+  transform/opacity rule, and it keeps that rule's intent: clip-path is
+  composited and never triggers layout, while animating width would reflow a
+  text run 30 times a second. Monospace plus `steps(n)` where n is the
+  character count lands the reveal on character boundaries.
+- **The caret lives inside the clipped span.** Outside it, a clip-path does not
+  change layout, so the caret sat at the end of the line's full width —
+  floating in blank space above unrevealed text.
+- **`START_MS` waits for the splash.** The splash covers the first paint and
+  fades out over 620–980ms, so a sequence starting at 0 plays its first second
+  behind an opaque overlay. Keep this above 980ms.
+- **Every animation ends on the state that matters** — log gone, card shown —
+  which is where reduced motion lands instantly.
+- The reduced-motion block zeroes `animation-delay` as well as duration.
+  Without that, a delay-built sequence still waits out its full choreography
+  before snapping to the end.
+
+Screenshotting this needs care: seeking animations with
+`document.getAnimations()` also rewinds the splash back over the page, which
+makes every early frame come out blank. Finish the splash's `devtrack-out` and
+seek the rest.
+
 ## Code analysis
 
 Language detection is a custom Linguist-style analyzer: file extension first,
@@ -195,7 +393,7 @@ byte in the first 8 KB).
 Prisma models: `User` (with `role`), `Project`, `ProjectSnapshot` (one row per
 upload or re-scan, holding the LOC and language stats so history works),
 `File` (per-file granularity, optional), `Task`, `ActivityLogEntry`,
-`Dependency`, `TechTag` (frontend / backend / database / other).
+`Dependency`, `TechTag` (frontend / backend / database / cloud / other).
 
 Re-uploads **version** the project: each one creates a new `ProjectSnapshot`
 rather than overwriting the last. Time-series charts read from the snapshot

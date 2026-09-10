@@ -7,6 +7,17 @@ import {
   type DependencyScan,
 } from "./dependencies";
 import { TechCollector, type DetectedTech } from "./tech";
+import {
+  HygieneCollector,
+  manifestProblemFindings,
+  sortFindings,
+  structuredKind,
+  validateStructured,
+  MAX_STRUCTURED_FILE_BYTES,
+  MAX_STRUCTURED_FILES,
+  MAX_STRUCTURED_TOTAL_BYTES,
+  type Finding,
+} from "./findings";
 
 /**
  * Incremental analysis, so upload size stops mattering.
@@ -20,6 +31,10 @@ import { TechCollector, type DetectedTech } from "./tech";
  *   - the bodies of dependency manifests and schema.prisma, which are the only
  *     files whose contents anything downstream needs;
  *   - one row per file, and only when the project opted into per-file tracking.
+ *
+ * Structured files are the one apparent exception, and are not really one:
+ * their bodies are captured, parsed in `add()` and dropped in the same call,
+ * so only the resulting findings survive. Nothing accumulates per file.
  *
  * So peak memory tracks the number of *files*, not their size. A 40 GB upload
  * costs about what a 40 MB one does.
@@ -146,6 +161,7 @@ export type StreamedAnalysis = {
   analysis: AnalysisResult;
   dependencies: DependencyScan;
   detected: DetectedTech[];
+  findings: Finding[];
 };
 
 /**
@@ -160,10 +176,16 @@ export class SnapshotAccumulator {
   private readonly skipped = { excluded: 0, binary: 0, empty: 0 };
   private readonly manifests: RawEntry[] = [];
   private readonly tech = new TechCollector();
+  private readonly hygiene = new HygieneCollector();
+  private readonly findings: Finding[] = [];
   private manifestBytes = 0;
+  private structuredFiles = 0;
+  private structuredBytes = 0;
   private totalFiles = 0;
   private totalLines = 0;
   private totalBytes = 0;
+  private rootCandidate: string | null = null;
+  private rootShared = true;
 
   /** Per-file rows are only kept when the project actually stores them. */
   constructor(private readonly keepFiles: boolean) {}
@@ -178,6 +200,10 @@ export class SnapshotAccumulator {
     const path = normalizePath(rawPath);
     if (!path) return null;
 
+    // Before the exclusion check: a lockfile is excluded from every count and
+    // is still the answer to "does this project have one".
+    this.hygiene.observeRaw(path);
+
     if (isExcludedPath(path)) {
       this.skipped.excluded += 1;
       return null;
@@ -188,31 +214,52 @@ export class SnapshotAccumulator {
     if (this.seen.has(hash)) return null;
     this.seen.add(hash);
 
-    // Temporary: set DEVTRACK_MEM=1 to trace where memory goes during a very
-    // large upload. Distinguishes JS object retention (heapUsed) from retained
-    // Buffers (external / arrayBuffers).
-    if (process.env.DEVTRACK_MEM && this.seen.size % 5000 === 0) {
-      const m = process.memoryUsage();
-      const mb = (n: number) => Math.round(n / 1048576);
-      console.log(
-        `[mem] files=${this.seen.size} heapUsed=${mb(m.heapUsed)}MB ` +
-          `heapTotal=${mb(m.heapTotal)}MB external=${mb(m.external)}MB ` +
-          `arrayBuffers=${mb(m.arrayBuffers)}MB rss=${mb(m.rss)}MB`,
-      );
-    }
-
     // Config-file signals come from the path alone.
     this.tech.addPath(path);
+    this.hygiene.observe(path);
 
-    const wantsBody =
+    const wantsManifest =
       isManifestPath(path) || path.toLowerCase().endsWith("schema.prisma");
-    const room = MAX_RETAINED_MANIFEST_BYTES - this.manifestBytes;
+    const manifestRoom = MAX_RETAINED_MANIFEST_BYTES - this.manifestBytes;
+    const manifestLimit =
+      wantsManifest && manifestRoom > 0
+        ? Math.min(MAX_MANIFEST_BYTES, manifestRoom)
+        : 0;
+
+    // A structured body is parsed and dropped inside add(), so its budget
+    // limits parsing work rather than retained memory.
+    const structuredLimit = this.structuredLimitFor(path);
+
+    // .gitignore decides whether a committed .env is a real finding, and it is
+    // the only file read purely for a hygiene rule.
+    const wantsIgnore = path.toLowerCase().endsWith(".gitignore");
 
     return {
       path,
-      captureLimit:
-        wantsBody && room > 0 ? Math.min(MAX_MANIFEST_BYTES, room) : 0,
+      captureLimit: Math.max(
+        manifestLimit,
+        structuredLimit,
+        wantsIgnore ? MAX_STRUCTURED_FILE_BYTES : 0,
+      ),
     };
+  }
+
+  /** Zero once either structured budget is spent, which stops the parsing. */
+  private structuredLimitFor(path: string): number {
+    if (!structuredKind(path)) return 0;
+
+    if (
+      this.structuredFiles >= MAX_STRUCTURED_FILES ||
+      this.structuredBytes >= MAX_STRUCTURED_TOTAL_BYTES
+    ) {
+      this.hygiene.countStructured(false);
+      return 0;
+    }
+
+    return Math.min(
+      MAX_STRUCTURED_FILE_BYTES,
+      MAX_STRUCTURED_TOTAL_BYTES - this.structuredBytes,
+    );
   }
 
   add(outcome: ScanOutcome): void {
@@ -225,6 +272,7 @@ export class SnapshotAccumulator {
     this.totalFiles += 1;
     this.totalLines += file.lines;
     this.totalBytes += file.bytes;
+    this.trackRoot(file.path);
 
     const running = this.languages.get(file.language) ?? {
       language: file.language,
@@ -239,11 +287,38 @@ export class SnapshotAccumulator {
 
     if (this.keepFiles) this.files.push(file);
 
-    if (captured && captured.length > 0) {
+    if (!captured || captured.length === 0) return;
+
+    // A body that stopped at its capture limit is a prefix, not a file.
+    // Parsing a prefix would report a syntax error in a file that is fine —
+    // the one failure mode that would make findings worth ignoring.
+    const complete = captured.length === file.bytes;
+    const lower = file.path.toLowerCase();
+
+    if (complete && lower.endsWith(".gitignore")) {
+      this.hygiene.setGitignore(captured.toString("utf8"));
+    }
+
+    if (structuredKind(file.path)) {
+      if (complete) {
+        const finding = validateStructured(file.path, captured);
+        if (finding) this.findings.push(finding);
+        this.structuredFiles += 1;
+        this.structuredBytes += captured.length;
+        this.hygiene.countStructured(true);
+      } else {
+        this.hygiene.countStructured(false);
+      }
+    }
+
+    if (
+      complete &&
+      (isManifestPath(file.path) || lower.endsWith("schema.prisma"))
+    ) {
       this.manifests.push({ path: file.path, content: captured });
       this.manifestBytes += captured.length;
 
-      if (file.path.toLowerCase().endsWith("schema.prisma")) {
+      if (lower.endsWith("schema.prisma")) {
         this.tech.addPrismaSchema(captured.toString("utf8"));
       }
     }
@@ -251,6 +326,31 @@ export class SnapshotAccumulator {
 
   get countedFiles(): number {
     return this.totalFiles;
+  }
+
+  /**
+   * Mirrors stripSharedRoot's test, one file at a time.
+   *
+   * Findings need the same prefix stripped as file rows do, or a finding cites
+   * `myproject/tsconfig.json` while the file list shows `tsconfig.json`. Since
+   * file rows are only retained when the project opted into per-file tracking,
+   * the root has to be tracked as files pass rather than derived from them.
+   */
+  private trackRoot(path: string): void {
+    if (!this.rootShared) return;
+
+    if (this.rootCandidate === null) {
+      this.rootCandidate = path.split("/")[0];
+    }
+
+    const root = this.rootCandidate;
+    if (
+      !root ||
+      !path.startsWith(`${root}/`) ||
+      path.length <= root.length + 1
+    ) {
+      this.rootShared = false;
+    }
   }
 
   /**
@@ -266,7 +366,24 @@ export class SnapshotAccumulator {
       this.tech.addDependency(dep);
     }
 
+    // A broken package.json produces both a syntax finding and a dependency
+    // problem. One file, one row: the syntax finding names the line, so it is
+    // the one that survives.
+    const reported = new Set(
+      this.findings.map((finding) => finding.path).filter((p): p is string => !!p),
+    );
+    const root = this.rootShared ? this.rootCandidate : null;
+    const findings = sortFindings([
+      ...this.findings,
+      ...manifestProblemFindings(dependencies.problems, reported),
+      ...this.hygiene.finish(),
+    ]).map((finding) => {
+      if (!root || !finding.path?.startsWith(`${root}/`)) return finding;
+      return { ...finding, path: finding.path.slice(root.length + 1) };
+    });
+
     return {
+      findings,
       analysis: {
         files: stripSharedRoot(this.files),
         languages: [...this.languages.values()].sort(

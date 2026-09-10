@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -12,6 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { languageFacts } from "@/lib/languageInfo";
 
 // --- shared chrome -------------------------------------------------------
 
@@ -181,12 +182,17 @@ export function LanguageMix({ rows }: { rows: LanguageRow[] }) {
  * colour or on a hover tooltip.
  */
 export function LanguageTable({ rows }: { rows: LanguageRow[] }) {
+  // Which language's explanation is open. Only one at a time: expanding all of
+  // them turns a compact table into a page of prose.
+  const [openLanguage, setOpenLanguage] = useState<string | null>(null);
+
   if (rows.length === 0) return null;
 
   return (
     <table className="mt-4 w-full text-xs">
       <caption className="sr-only">
-        Language breakdown for the latest snapshot
+        Language breakdown for the latest snapshot. Select a language to read
+        what it is used for.
       </caption>
       <thead>
         <tr className="border-b border-line text-left text-faint">
@@ -205,29 +211,79 @@ export function LanguageTable({ rows }: { rows: LanguageRow[] }) {
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={row.language} className="border-b border-line last:border-0">
-            <th scope="row" className="py-1.5 text-left font-normal">
-              <span className="flex items-center gap-1.5">
-                <span
-                  aria-hidden
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{ backgroundColor: row.color }}
-                />
-                {row.language}
-              </span>
-            </th>
-            <td className="tabular py-1.5 text-right text-muted">
-              {fmt(row.lines)}
-            </td>
-            <td className="tabular py-1.5 text-right text-muted">
-              {fmt(row.bytes)}
-            </td>
-            <td className="tabular py-1.5 text-right">
-              {row.percent.toFixed(1)}%
-            </td>
-          </tr>
-        ))}
+        {rows.map((row) => {
+          const facts = languageFacts(row.language);
+          const open = openLanguage === row.language;
+
+          return (
+            <Fragment key={row.language}>
+              <tr
+                className={`border-b border-line ${
+                  open ? "" : "last:border-0"
+                }`}
+              >
+                <th scope="row" className="py-1.5 text-left font-normal">
+                  {facts ? (
+                    // Only a language we can actually explain becomes a
+                    // control — a button that reveals nothing is a dead end.
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      onClick={() =>
+                        setOpenLanguage(open ? null : row.language)
+                      }
+                      className="flex items-center gap-1.5 text-left transition-colors hover:text-accent"
+                    >
+                      <span
+                        aria-hidden
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: row.color }}
+                      />
+                      <span className="underline decoration-dotted decoration-from-font underline-offset-2">
+                        {row.language}
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      <span
+                        aria-hidden
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: row.color }}
+                      />
+                      {row.language}
+                    </span>
+                  )}
+                </th>
+                <td className="tabular py-1.5 text-right text-muted">
+                  {fmt(row.lines)}
+                </td>
+                <td className="tabular py-1.5 text-right text-muted">
+                  {fmt(row.bytes)}
+                </td>
+                <td className="tabular py-1.5 text-right">
+                  {row.percent.toFixed(1)}%
+                </td>
+              </tr>
+
+              {open && facts && (
+                <tr className="border-b border-line last:border-0">
+                  <td colSpan={4} className="pb-3 pt-0.5">
+                    <div className="fade rounded-md border-l-2 bg-accent-soft/60 px-3 py-2"
+                      style={{ borderColor: row.color }}
+                    >
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-faint">
+                        {facts.role}
+                      </p>
+                      <p className="mt-1 max-w-2xl leading-relaxed text-muted">
+                        {facts.summary}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
       </tbody>
     </table>
   );

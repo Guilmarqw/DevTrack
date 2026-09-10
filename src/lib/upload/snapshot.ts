@@ -1,11 +1,12 @@
 import { db } from "@/lib/db";
 import type { AnalysisResult } from "@/lib/analyzer/analyze";
 import type { DependencyScan } from "@/lib/analyzer/dependencies";
+import type { Finding } from "@/lib/analyzer/findings";
 import type { DetectedTech } from "@/lib/analyzer/tech";
 import { computeCompletion } from "@/lib/completion";
 import { UploadError } from "./stream";
 import type { SessionUser } from "@/lib/session";
-import type { UploadKind } from "@/generated/prisma/enums";
+import type { FindingSeverity, UploadKind } from "@/generated/prisma/enums";
 
 /** MariaDB is happier with several medium inserts than one enormous one. */
 const INSERT_CHUNK = 500;
@@ -30,6 +31,7 @@ export type SnapshotRequest = {
   analysis: AnalysisResult;
   dependencies: DependencyScan;
   detected: DetectedTech[];
+  findings: Finding[];
 };
 
 export type SnapshotSummary = {
@@ -44,8 +46,15 @@ export type SnapshotSummary = {
   skipped: { excluded: number; binary: number; empty: number };
   dependencyCount: number;
   manifests: string[];
-  /** Manifests that could not be parsed, so a typo is visible not silent. */
-  manifestProblems: Array<{ path: string; reason: string }>;
+  /**
+   * What the scan found wrong. Persisted on the snapshot as well, so this copy
+   * is only for the upload panel — the project page reads the stored rows.
+   */
+  findings: Array<{
+    severity: FindingSeverity;
+    title: string;
+    path: string | null;
+  }>;
   detectedTech: string[];
 };
 
@@ -156,6 +165,9 @@ async function writeSnapshot({
   // reconciled against what the owner has already decided.
   const depScan = request.dependencies;
   const detected = request.detected;
+  // Findings are snapshot-scoped for the same reason and with no dismiss flag:
+  // they are derived from the code, so a re-scan is what clears one.
+  const findings = request.findings;
 
   const snapshotId = await db.$transaction(async (tx) => {
     const snapshot = await tx.projectSnapshot.create({
@@ -168,6 +180,9 @@ async function writeSnapshot({
         totalLines: analysis.totalLines,
         totalBytes: analysis.totalBytes,
         completionPct,
+        // Every snapshot this code writes has been scanned, including one
+        // whose scan happened to find nothing.
+        findingsScanned: true,
       },
       select: { id: true },
     });
@@ -202,6 +217,19 @@ async function writeSnapshot({
           manager: dep.manager,
           scope: dep.scope,
           sourceFile: dep.sourceFile,
+        })),
+      });
+    }
+
+    for (const batch of chunk(findings, INSERT_CHUNK)) {
+      await tx.snapshotFinding.createMany({
+        data: batch.map((finding) => ({
+          snapshotId: snapshot.id,
+          rule: finding.rule,
+          severity: finding.severity,
+          title: finding.title,
+          detail: finding.detail,
+          path: finding.path,
         })),
       });
     }
@@ -255,7 +283,11 @@ async function writeSnapshot({
     skipped: analysis.skipped,
     dependencyCount: depScan.dependencies.length,
     manifests: depScan.manifests,
-    manifestProblems: depScan.problems,
+    findings: findings.map((f) => ({
+      severity: f.severity,
+      title: f.title,
+      path: f.path,
+    })),
     detectedTech: detected.map((t) => t.name),
   };
 }

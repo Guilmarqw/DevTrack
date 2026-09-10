@@ -62,6 +62,7 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
       totalLines: true,
       totalBytes: true,
       completionPct: true,
+      findingsScanned: true,
       languageStats: {
         orderBy: { bytes: "desc" },
         select: { language: true, bytes: true, lines: true, fileCount: true },
@@ -115,6 +116,24 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
       })
     : [];
 
+  // Findings are snapshot-scoped like dependencies, and for the same reason
+  // only the newest set is shown: older ones are the record of when something
+  // was broken, not a list of things still wrong.
+  const findings = latest
+    ? await db.snapshotFinding.findMany({
+        where: { snapshotId: latest.id },
+        orderBy: [{ severity: "asc" }, { rule: "asc" }],
+        select: {
+          id: true,
+          rule: true,
+          severity: true,
+          title: true,
+          detail: true,
+          path: true,
+        },
+      })
+    : [];
+
   return {
     project,
     snapshots,
@@ -122,6 +141,7 @@ export async function getProjectDetail(projectId: string, user: SessionUser) {
     previous,
     activity,
     dependencies,
+    findings,
     // Live figure from current task state, which is not the same as the value
     // frozen into the latest snapshot.
     completionPct: computeCompletion(project, project.tasks),

@@ -18,10 +18,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }
 
+  // A re-scan names its target in the query string, not the body, so it can
+  // be read without consuming the stream. This is the authoritative source:
+  // reading it from a body field would mean waiting for the whole upload to
+  // find out which project it belongs to.
+  const targetProjectId =
+    new URL(request.url).searchParams.get("projectId")?.trim() || null;
+
   try {
     // Whether per-file rows are kept has to be known before parsing, because
     // it decides whether the stream retains a row per file or only totals.
-    const keepFiles = await projectTracksFiles(request, user);
+    const keepFiles = targetProjectId
+      ? await projectTracksFiles(targetProjectId, user)
+      : false;
 
     const upload = await streamUpload(request, { keepFiles });
 
@@ -37,13 +46,17 @@ export async function POST(request: Request) {
 
     const summary = await createSnapshot({
       user,
-      projectId: upload.projectId ?? undefined,
+      // The query string wins. `upload.projectId` is only the legacy body
+      // field, kept as a fallback; without this a re-scan silently created a
+      // brand-new project named after the first file it saw.
+      projectId: targetProjectId ?? upload.projectId ?? undefined,
       projectName: upload.projectName ?? upload.sourceName,
       uploadKind: upload.uploadKind,
       sourceName: upload.sourceName,
       analysis: upload.analysis,
       dependencies: upload.dependencies,
       detected: upload.detected,
+      findings: upload.findings,
     });
 
     return NextResponse.json(
@@ -71,12 +84,9 @@ export async function POST(request: Request) {
  * A new project has no rows yet, so it defaults to off.
  */
 async function projectTracksFiles(
-  request: Request,
+  projectId: string,
   user: SessionUser,
 ): Promise<boolean> {
-  const projectId = new URL(request.url).searchParams.get("projectId");
-  if (!projectId) return false;
-
   const project = await db.project.findFirst({
     where: { id: projectId, ...projectScope(user) },
     select: { trackFiles: true },

@@ -92,6 +92,57 @@ const DEPENDENCY_RULES: Record<string, { name: string; category: TechCategory }>
   "gorm.io/gorm": { name: "GORM", category: "DATABASE" },
   "doctrine/orm": { name: "Doctrine", category: "DATABASE" },
 
+  // --- hosted platforms and managed services
+  //
+  // AWS publishes one package per service, so the SDK is matched by its
+  // umbrella packages and the handful of clients that actually name the
+  // service being used. A project importing @aws-sdk/client-s3 is on AWS; it
+  // is not worth a rule per service to say which.
+  "aws-sdk": { name: "AWS", category: "CLOUD" },
+  "@aws-sdk/client-s3": { name: "AWS S3", category: "CLOUD" },
+  "@aws-sdk/client-dynamodb": { name: "AWS DynamoDB", category: "CLOUD" },
+  "@aws-sdk/client-lambda": { name: "AWS Lambda", category: "CLOUD" },
+  "@aws-sdk/client-ses": { name: "AWS SES", category: "CLOUD" },
+  "aws-cdk-lib": { name: "AWS CDK", category: "CLOUD" },
+  "aws-amplify": { name: "AWS Amplify", category: "CLOUD" },
+  boto3: { name: "AWS", category: "CLOUD" },
+  "serverless": { name: "Serverless Framework", category: "CLOUD" },
+
+  firebase: { name: "Firebase", category: "CLOUD" },
+  "firebase-admin": { name: "Firebase", category: "CLOUD" },
+  "firebase-functions": { name: "Firebase Functions", category: "CLOUD" },
+  "@angular/fire": { name: "Firebase", category: "CLOUD" },
+
+  "@supabase/supabase-js": { name: "Supabase", category: "CLOUD" },
+  "@supabase/ssr": { name: "Supabase", category: "CLOUD" },
+  "@supabase/auth-helpers-nextjs": { name: "Supabase", category: "CLOUD" },
+  supabase: { name: "Supabase", category: "CLOUD" },
+
+  "@vercel/analytics": { name: "Vercel", category: "CLOUD" },
+  "@vercel/blob": { name: "Vercel Blob", category: "CLOUD" },
+  "@vercel/postgres": { name: "Vercel Postgres", category: "CLOUD" },
+  "@netlify/functions": { name: "Netlify", category: "CLOUD" },
+  wrangler: { name: "Cloudflare Workers", category: "CLOUD" },
+  "@cloudflare/workers-types": { name: "Cloudflare Workers", category: "CLOUD" },
+  "@planetscale/database": { name: "PlanetScale", category: "CLOUD" },
+  "@neondatabase/serverless": { name: "Neon", category: "CLOUD" },
+  "@upstash/redis": { name: "Upstash", category: "CLOUD" },
+  "@azure/identity": { name: "Azure", category: "CLOUD" },
+  "@google-cloud/storage": { name: "Google Cloud", category: "CLOUD" },
+  "google-cloud-storage": { name: "Google Cloud", category: "CLOUD" },
+  "azure-storage-blob": { name: "Azure", category: "CLOUD" },
+  cloudinary: { name: "Cloudinary", category: "CLOUD" },
+  stripe: { name: "Stripe", category: "CLOUD" },
+  twilio: { name: "Twilio", category: "CLOUD" },
+  resend: { name: "Resend", category: "CLOUD" },
+  "@sendgrid/mail": { name: "SendGrid", category: "CLOUD" },
+  "@sentry/node": { name: "Sentry", category: "CLOUD" },
+  "@sentry/nextjs": { name: "Sentry", category: "CLOUD" },
+  "sentry-sdk": { name: "Sentry", category: "CLOUD" },
+  algoliasearch: { name: "Algolia", category: "CLOUD" },
+  "@clerk/nextjs": { name: "Clerk", category: "CLOUD" },
+  "@auth0/auth0-react": { name: "Auth0", category: "CLOUD" },
+
   // --- everything else worth naming
   typescript: { name: "TypeScript", category: "OTHER" },
   eslint: { name: "ESLint", category: "OTHER" },
@@ -184,8 +235,106 @@ const FILE_RULES: Array<{
   {
     test: (_p, b) => b === "terraform.tf" || b.endsWith(".tf"),
     name: "Terraform",
-    category: "OTHER",
+    // Reclassified: Terraform's whole purpose is provisioning hosted
+    // infrastructure, which is what this category is for.
+    category: "CLOUD",
     label: "Terraform files",
+  },
+
+  // --- platform config files
+  //
+  // Often the only evidence there is. A project deployed on Vercel or Netlify
+  // frequently has no dependency that says so — the config file is the signal,
+  // and it is a definite one because nothing else writes these names.
+  {
+    test: (_p, b) => b === "vercel.json" || b === ".vercelignore",
+    name: "Vercel",
+    category: "CLOUD",
+    label: "vercel.json",
+  },
+  {
+    test: (_p, b) => b === "netlify.toml",
+    name: "Netlify",
+    category: "CLOUD",
+    label: "netlify.toml",
+  },
+  {
+    test: (_p, b) => b === "wrangler.toml" || b === "wrangler.jsonc",
+    name: "Cloudflare Workers",
+    category: "CLOUD",
+    label: "wrangler config",
+  },
+  {
+    test: (_p, b) => b === "firebase.json" || b === ".firebaserc",
+    name: "Firebase",
+    category: "CLOUD",
+    label: "firebase.json",
+  },
+  {
+    test: (_p, b) => b === "firestore.rules",
+    name: "Firestore",
+    category: "CLOUD",
+    label: "firestore.rules",
+  },
+  {
+    test: (p, b) => p.startsWith("supabase/") || b === "supabase.toml",
+    name: "Supabase",
+    category: "CLOUD",
+    label: "supabase directory",
+  },
+  {
+    test: (_p, b) => b === "serverless.yml" || b === "serverless.yaml",
+    name: "Serverless Framework",
+    category: "CLOUD",
+    label: "serverless.yml",
+  },
+  {
+    test: (_p, b) => b === "template.yaml" || b === "samconfig.toml",
+    name: "AWS SAM",
+    category: "CLOUD",
+    label: "SAM template",
+  },
+  {
+    test: (_p, b) => b === "cdk.json",
+    name: "AWS CDK",
+    category: "CLOUD",
+    label: "cdk.json",
+  },
+  {
+    test: (_p, b) => b === "app.yaml" || b === "cloudbuild.yaml",
+    name: "Google Cloud",
+    category: "CLOUD",
+    label: "Google Cloud config",
+  },
+  {
+    test: (_p, b) => b === "fly.toml",
+    name: "Fly.io",
+    category: "CLOUD",
+    label: "fly.toml",
+  },
+  {
+    test: (_p, b) => b === "railway.json" || b === "railway.toml",
+    name: "Railway",
+    category: "CLOUD",
+    label: "railway config",
+  },
+  {
+    test: (_p, b) => b === "render.yaml",
+    name: "Render",
+    category: "CLOUD",
+    label: "render.yaml",
+  },
+  {
+    test: (_p, b) => b === "procfile",
+    name: "Heroku",
+    category: "CLOUD",
+    label: "Procfile",
+  },
+  {
+    test: (p, b) => b === "chart.yaml" || p.startsWith("helm/"),
+    name: "Helm",
+    category: "CLOUD",
+    label: "Helm chart",
   },
   {
     test: (p) => /(^|\/)migrations\//.test(p),

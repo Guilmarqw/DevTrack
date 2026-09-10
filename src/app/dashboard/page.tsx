@@ -2,6 +2,8 @@ import Link from "next/link";
 import { requireUser, projectScope } from "@/lib/session";
 import { db } from "@/lib/db";
 import { DashboardHeader } from "@/components/DashboardHeader";
+import { HealthBadge } from "@/components/HealthBadge";
+import { projectHealth } from "@/lib/health";
 import { UploadDropzone } from "./UploadDropzone";
 
 export const metadata = { title: "Dashboard · DevTrack" };
@@ -16,8 +18,17 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: PageProps<"/dashboard">) {
   const user = await requireUser();
+  // Next 16: searchParams is async and must be awaited.
+  const params = await searchParams;
+  // Set by the delete action's redirect. Rendered as text, which React escapes
+  // — it is the owner's own project name, but it still arrives from the URL.
+  const deletedRaw = params?.deleted;
+  const deleted =
+    typeof deletedRaw === "string" && deletedRaw.trim() ? deletedRaw : null;
 
   const projects = await db.project.findMany({
     where: { ...projectScope(user), archivedAt: null },
@@ -36,6 +47,8 @@ export default async function DashboardPage() {
           totalFiles: true,
           totalLines: true,
           totalBytes: true,
+          findingsScanned: true,
+          findings: { select: { severity: true } },
           languageStats: {
             orderBy: { bytes: "desc" },
             take: 3,
@@ -45,6 +58,15 @@ export default async function DashboardPage() {
       },
     },
   });
+
+  // A project with no snapshot at all has nothing to check yet, so it is not
+  // "unchecked" — it is unmeasured, and the empty-state copy covers it.
+  const unchecked = projects.filter(
+    (project) =>
+      project.snapshots[0] &&
+      !project.snapshots[0].findingsScanned &&
+      project.snapshots[0].findings.length === 0,
+  );
 
   return (
     <>
@@ -60,6 +82,16 @@ export default async function DashboardPage() {
         </p>
       </div>
 
+      {deleted && (
+        <p
+          role="status"
+          className="fade mt-4 rounded-md border border-line bg-surface px-3 py-2 text-xs text-muted"
+        >
+          Deleted <span className="font-medium text-ink">{deleted}</span> and
+          everything measured from it.
+        </p>
+      )}
+
       <section className="rise mt-8">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
           Add a project
@@ -68,6 +100,43 @@ export default async function DashboardPage() {
           <UploadDropzone />
         </div>
       </section>
+
+      {/* Only rendered when there is something to act on. A permanent empty
+          "all checked" panel would be clutter on a dashboard that is meant to
+          be read at a glance. */}
+      {unchecked.length > 0 && (
+        <section className="rise mt-10">
+          <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+            Not health-checked
+          </h2>
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+            {unchecked.length}{" "}
+            {unchecked.length === 1 ? "project was" : "projects were"} last
+            scanned before DevTrack looked for problems, so{" "}
+            {unchecked.length === 1 ? "its" : "their"} health is unknown rather
+            than good. Checking one needs its folder again — the measurements
+            are stored but your source never was, so a scan has to see the
+            files.
+          </p>
+          <ul className="mt-3 flex flex-wrap gap-2">
+            {unchecked.map((project) => (
+              <li key={project.id}>
+                <Link
+                  href={`/projects/${project.id}#add-files`}
+                  className="press inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-xs transition-colors hover:border-accent hover:text-accent"
+                >
+                  <span
+                    aria-hidden
+                    className="inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: "var(--color-faint)" }}
+                  />
+                  {project.name}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="rise mt-10">
         <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
@@ -92,12 +161,23 @@ export default async function DashboardPage() {
                   className="px-4 py-3 transition-colors hover:bg-accent-soft"
                 >
                   <div className="flex items-baseline justify-between gap-3">
-                    <Link
-                      href={`/projects/${project.id}`}
-                      className="text-sm font-medium hover:text-accent"
-                    >
-                      {project.name}
-                    </Link>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/projects/${project.id}`}
+                        className="text-sm font-medium hover:text-accent"
+                      >
+                        {project.name}
+                      </Link>
+                      {latest && (
+                        <HealthBadge
+                          size="sm"
+                          health={projectHealth({
+                            scanned: latest.findingsScanned,
+                            findings: latest.findings,
+                          })}
+                        />
+                      )}
+                    </span>
                     <p className="text-xs text-faint">
                       {project._count.snapshots}{" "}
                       {project._count.snapshots === 1

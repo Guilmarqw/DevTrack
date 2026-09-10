@@ -2,18 +2,11 @@ import Link from "next/link";
 import { requireUser } from "@/lib/session";
 import { getLeaderboard } from "@/lib/analytics";
 import { DashboardHeader } from "@/components/DashboardHeader";
+import { RankBadge } from "@/components/RankBadge";
+import { LanguageStandings } from "./LanguageStandings";
 
 export const metadata = { title: "Leaderboard · DevTrack" };
 export const dynamic = "force-dynamic";
-
-/** Medal-free ranking: a number reads faster and does not imply a prize. */
-function Rank({ index }: { index: number }) {
-  return (
-    <span className="tabular w-5 shrink-0 text-xs text-faint">
-      {index + 1}
-    </span>
-  );
-}
 
 function You() {
   return (
@@ -74,7 +67,7 @@ export default async function LeaderboardPage() {
                 {board.byLines.map((entry, index) => (
                   <li key={entry.userId} className="px-4 py-3">
                     <div className="flex items-baseline gap-2">
-                      <Rank index={index} />
+                      <RankBadge index={index} />
                       <span className="text-sm font-medium">
                         {entry.displayName}
                       </span>
@@ -150,6 +143,20 @@ export default async function LeaderboardPage() {
 
             <section className="rise lg:col-span-2">
               <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
+                Head to head by language
+              </h2>
+              <p className="mt-1 max-w-2xl text-xs text-muted">
+                Pick a language to see every account that writes it and by how
+                much. The number beside a language is how many accounts have
+                written it.
+              </p>
+              <div className="mt-3">
+                <LanguageStandings leaders={board.languageLeaders} />
+              </div>
+            </section>
+
+            <section className="rise lg:col-span-2">
+              <h2 className="text-xs font-medium uppercase tracking-wider text-faint">
                 Most projects tracked
               </h2>
               <ul className="mt-3 flex flex-wrap gap-2">
@@ -158,7 +165,7 @@ export default async function LeaderboardPage() {
                     key={entry.userId}
                     className="lift flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
                   >
-                    <Rank index={index} />
+                    <RankBadge index={index} />
                     <span className="font-medium">{entry.displayName}</span>
                     {entry.isViewer && <You />}
                     <span className="tabular text-muted">

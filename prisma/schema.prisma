@@ -120,10 +120,20 @@ model ProjectSnapshot {
   /// value as it stood when the snapshot was taken.
   completionPct Float
 
+  /// Whether the findings scan ran for this snapshot.
+  ///
+  /// Needed because "no findings" and "never checked" are indistinguishable
+  /// from an empty SnapshotFinding set, and every snapshot taken before
+  /// findings existed is the second one. Defaulting to false is what makes the
+  /// backfill correct: old rows really were not scanned, and the panel says so
+  /// instead of claiming the files all parse.
+  findingsScanned Boolean @default(false)
+
   project       Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   languageStats LanguageStat[]
   files         SnapshotFile[]
   dependencies  Dependency[]
+  findings      SnapshotFinding[]
   activity      ActivityLogEntry[]
 
   @@index([projectId, createdAt])
@@ -199,6 +209,42 @@ model Dependency {
   @@index([snapshotId])
 }
 
+enum FindingSeverity {
+  ERROR
+  WARN
+  INFO
+}
+
+/// Something DevTrack can say is wrong, as opposed to measured.
+///
+/// Snapshot-scoped and immutable, exactly like Dependency: a finding is a fact
+/// about one upload, so re-scanning writes a new set rather than mutating this
+/// one, and "when did this break" answers itself from the series.
+///
+/// There is no dismiss flag. A finding is derived from the code, so the way to
+/// clear one is to fix the file and re-scan -- unlike a TechTag, which is a
+/// guess a person is entitled to overrule.
+model SnapshotFinding {
+  id         String @id @default(cuid())
+  snapshotId String
+
+  /// Stable slug ("json-invalid", "env-not-ignored") so the same problem is
+  /// recognisable across snapshots even if its wording changes.
+  rule     String
+  severity FindingSeverity
+  title    String
+  /// Why it matters and what to do, as prose. @db.Text because the advice
+  /// outgrows a VARCHAR and is never indexed or searched.
+  detail   String  @db.Text
+  /// The file it concerns, or null for a whole-project observation. TEXT for
+  /// the same reason as SnapshotFile.path.
+  path     String? @db.Text
+
+  snapshot ProjectSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([snapshotId, severity])
+}
+
 // ---------------------------------------------------------------------------
 // Human-edited state -- lives on Project, not on a snapshot
 // ---------------------------------------------------------------------------
@@ -235,6 +281,14 @@ enum TechCategory {
   FRONTEND
   BACKEND
   DATABASE
+  /// Hosted platforms and managed services -- AWS, Firebase, Supabase, Vercel.
+  ///
+  /// Its own category rather than OTHER because "this project depends on
+  /// somebody else's infrastructure" is a different fact about a codebase than
+  /// "it uses ESLint", and it is usually the fact you most want at a glance.
+  /// Supabase and Firebase land here rather than in DATABASE: they do provide
+  /// a database, but choosing them is a hosting decision, not a schema one.
+  CLOUD
   OTHER
 }
 

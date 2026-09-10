@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `techtag` MODIFY `category` ENUM('FRONTEND', 'BACKEND', 'DATABASE', 'CLOUD', 'OTHER') NOT NULL;
